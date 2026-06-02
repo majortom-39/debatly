@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en" data-theme="dark" style="color-scheme: dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>debatly</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..800;1,14..32,300..800&display=swap" />
+    <link rel="icon" href="/Debatly%20Favicon%20Light%20Mode%20Tight.png" type="image/png" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href="/Debatly%20Favicon%20Dark%20Mode%20Tight.png" type="image/png" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="/Debatly%20Favicon%20Light%20Mode%20Tight.png" type="image/png" data-dynamic-favicon="true" />
+    <style>
+      html,
+      body,
+      #root {
+        min-width: 320px;
+        min-height: 100%;
+        margin: 0;
+        background: #0c0a09;
+        color: #ffffff;
+        color-scheme: dark;
+      }
+
+      html[data-theme="light"],
+      html[data-theme="light"] body,
+      html[data-theme="light"] #root {
+        background: #f5f5f5;
+        color: #0c0a09;
+        color-scheme: light;
+      }
+
+      html[data-theme="dark"],
+      html[data-theme="dark"] body,
+      html[data-theme="dark"] #root {
+        background: #0c0a09;
+        color: #ffffff;
+        color-scheme: dark;
+      }
+    </style>
+    <script>
+      (() => {
+        try {
+          const stored = window.localStorage.getItem("debate-ui-theme");
+          const theme = stored === "light" ? "light" : "dark";
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch {
+          document.documentElement.dataset.theme = "dark";
+          document.documentElement.style.colorScheme = "dark";
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

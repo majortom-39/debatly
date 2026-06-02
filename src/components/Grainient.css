@@ -1,0 +1,22 @@
+.grainient-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.grainient-container canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.appGradientBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  background: var(--el-canvas);
+}
