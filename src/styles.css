@@ -8257,3 +8257,33 @@ body::-webkit-scrollbar-track,
   .topbarImportUrl { flex: 1; }
   .topbarImportInput { width: 100%; max-width: none; flex: 1; }
 }
+
+/* Guest (anonymous) sign-in nudge banner */
+.guestBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--el-hairline-strong);
+  border-radius: 12px;
+  background: var(--el-surface-strong);
+  color: var(--el-body);
+}
+.guestBannerText { font-size: 13px; font-weight: 500; line-height: 1.35; }
+.guestBannerActions { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.guestBannerSignIn {
+  height: 32px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid transparent; background: var(--el-ink); color: var(--el-surface);
+  font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  transition: opacity 140ms ease;
+}
+.guestBannerSignIn:hover { opacity: 0.88; }
+.guestBannerDismiss {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid var(--el-hairline-strong); background: transparent;
+  color: var(--el-muted); cursor: pointer; transition: color 140ms ease, border-color 140ms ease;
+}
+.guestBannerDismiss:hover { color: var(--el-ink); border-color: var(--el-ink); }

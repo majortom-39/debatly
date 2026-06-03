@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { ComponentType, CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import Grainient from "./components/Grainient";
 import PixelCard from "./components/PixelCard";
-import { authHeaders, getAccessToken, isSupabaseConfigured, mapAuthUser, signInWithProvider, signOut, supabase, type AuthProvider, type AuthUser } from "./supabaseClient";
+import { authHeaders, getAccessToken, isSupabaseConfigured, mapAuthUser, signInAnonymously, signInWithProvider, signOut, supabase, type AuthProvider, type AuthUser } from "./supabaseClient";
 import type {
   ClashArtifact,
   CleanUtterance,
@@ -338,6 +338,7 @@ function App() {
   const [liveAnalysis, setLiveAnalysis] = useState<LiveAnalysis | null>(null); // NEW clean pipeline payload
   const [activeTab, setActiveTab] = useState<AnalysisTab>("debatePoints");
   const [transcriptOpen, setTranscriptOpen] = useState(true);
+  const [guestBannerDismissed, setGuestBannerDismissed] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [importUrl, setImportUrl] = useState("");
@@ -423,6 +424,10 @@ function App() {
   const presentedTurns = turns;
   const projectDurationMs = getActiveProjectDurationMs(project, clockTick);
   const recordingLocked = project.status === "report_ready";
+  // Auth tiers: a guest is an anonymous Supabase user (usable, persisted, but no
+  // email); a permanent user has signed in. "signedIn" elsewhere means permanent.
+  const isGuestUser = Boolean(authUser?.isAnonymous);
+  const isPermanentUser = Boolean(authUser) && !authUser?.isAnonymous;
   const sideViews = useMemo(() => buildSideViews(presentedDebate, presentedTurns), [presentedDebate, presentedTurns]);
   // Manual "Generate report" gating: only for a loaded debate that has no report yet
   // AND actually has speakers placed on a side (otherwise the report would be empty).
@@ -603,7 +608,19 @@ function App() {
     let mounted = true;
     supabase.auth.getSession().then(async ({ data }) => {
       if (!mounted) return;
-      const nextUser = mapAuthUser(data.session?.user);
+      let session = data.session;
+      // No session yet → sign the visitor in as an anonymous guest so the app is
+      // usable immediately. Their debates persist under this guest id and carry
+      // over if they later sign in.
+      if (!session) {
+        try {
+          session = await signInAnonymously();
+        } catch (error) {
+          pushEvent(error instanceof Error ? `Guest sign-in failed: ${error.message}` : "Guest sign-in failed");
+        }
+      }
+      if (!mounted) return;
+      const nextUser = mapAuthUser(session?.user);
       setAuthUser(nextUser);
       authUserIdRef.current = nextUser?.id || "";
       setAuthReady(true);
@@ -963,8 +980,8 @@ function App() {
     }
     if (isMicTesting) stopMicTest();
     if (isSupabaseConfigured && !authUser) {
-      setStatus("Sign in to create a debate project.");
-      pushEvent("Sign in required for new debate project");
+      setStatus("Still setting up your session — try again in a moment.");
+      pushEvent("Session not ready for new debate project");
       return;
     }
     setSavedDebatesLoading(true);
@@ -1087,8 +1104,11 @@ function App() {
     try {
       if (isLive) sendStopLive();
       await signOut();
-      setAuthUser(null);
-      authUserIdRef.current = "";
+      // Return to a fresh guest session so the app stays usable without re-login.
+      const guestSession = await signInAnonymously().catch(() => null);
+      const guestUser = mapAuthUser(guestSession?.user);
+      setAuthUser(guestUser);
+      authUserIdRef.current = guestUser?.id || "";
       latestProjectAutoLoadedForUserRef.current = "";
       savedDebateRecoveryAttemptsRef.current = 0;
       setSavedDebates([]);
@@ -1115,7 +1135,7 @@ function App() {
     let stream: MediaStream | null = null;
     try {
       if (isSupabaseConfigured && !authUser) {
-        throw new Error("Sign in to start and save a debate.");
+        throw new Error("Still setting up your session — try again in a moment.");
       }
       const startedAt = Date.now();
       recordingStartedAtRef.current = startedAt;
@@ -2407,7 +2427,7 @@ function App() {
         savedDebatesLoading={savedDebatesLoading}
         savedDebatesLoadError={savedDebatesLoadError}
         authReady={authReady}
-        signedIn={Boolean(authUser)}
+        signedIn={isPermanentUser}
         themeMode={themeMode}
         onProjectSelect={(projectId) => void loadSavedDebate(projectId)}
         onProjectRename={(target, isCurrent) => openProjectRename(target, isCurrent)}
@@ -2508,6 +2528,18 @@ function App() {
             </button>
           </div>
         </header>
+
+        {isGuestUser && !guestBannerDismissed && (
+          <div className="guestBanner" role="status">
+            <span className="guestBannerText">You're using Debatly as a guest — sign in to save your debates and keep them across devices.</span>
+            <div className="guestBannerActions">
+              <button type="button" className="guestBannerSignIn" onClick={() => { setIsSidebarOpen(false); void refreshAudioInputs(); setShowSettings(true); }}>Sign in</button>
+              <button type="button" className="guestBannerDismiss" onClick={() => setGuestBannerDismissed(true)} aria-label="Dismiss">
+                <X size={15} />
+              </button>
+            </div>
+          </div>
+        )}
 
         <section className={`controlPanel capturePanel ${isLive ? "isRecording" : ""} ${isRecordingPaused ? "isPaused" : ""}`}>
           <PixelCard
@@ -3701,6 +3733,9 @@ function SettingsDialog({
   onClose: () => void;
 }) {
   const [showScoringMetrics, setShowScoringMetrics] = useState(false);
+  // A guest (anonymous) user counts as "not signed in" for the account UI: we still
+  // show the sign-in options so they can upgrade and keep their debates.
+  const isPermanentUser = Boolean(authUser) && !authUser?.isAnonymous;
 
   return (
     <div className="stopDialogBackdrop" role="presentation">
@@ -3714,17 +3749,17 @@ function SettingsDialog({
         </div>
 
         <div className="settingsAccountPanel">
-          {authUser?.avatarUrl ? <img src={authUser.avatarUrl} alt="" /> : <UserCircle size={36} />}
+          {isPermanentUser && authUser?.avatarUrl ? <img src={authUser.avatarUrl} alt="" /> : <UserCircle size={36} />}
           <div>
-            <strong>{authUser?.name || (authReady ? "Sign in" : "Checking session")}</strong>
-            <small>{authUser?.email || "Save debates to your workspace"}</small>
+            <strong>{isPermanentUser ? authUser?.name : (authReady ? "Guest" : "Checking session")}</strong>
+            <small>{isPermanentUser ? authUser?.email : "Sign in to save your debates"}</small>
           </div>
-          {authUser && (
+          {isPermanentUser && (
             <button type="button" className="accountIconButton" onClick={onSignOut} disabled={authWorkingProvider === "signout"} aria-label="Sign out">
               <LogOut size={15} />
             </button>
           )}
-          {!authUser && (
+          {!isPermanentUser && (
             <div className="authProviderGrid settingsAuthProviderGrid" aria-label="Sign in options">
               <button type="button" onClick={() => onSignIn("google")} disabled={!authReady || Boolean(authWorkingProvider)}>
                 {authWorkingProvider === "google" ? "..." : "Google"}
