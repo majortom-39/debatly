@@ -382,6 +382,7 @@ function App() {
   const debateRef = useRef<DebateState>(initialDebate);
   const meterContextRef = useRef<AudioContext | null>(null);
   const streamContextRef = useRef<AudioContext | null>(null);
+  const preparedAudioContextRef = useRef<AudioContext | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const silenceRef = useRef<GainNode | null>(null);
@@ -1152,6 +1153,19 @@ function App() {
       if (isSupabaseConfigured && !authUser) {
         throw new Error("Still setting up your session — try again in a moment.");
       }
+      // iOS/Safari: an AudioContext is created SUSPENDED and only starts producing
+      // audio if resume() runs inside the user gesture. Create + unlock it here on
+      // the tap (before any await), then reuse it for the capture pipeline. Without
+      // this the worklet never fires and no audio is captured on mobile.
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (Ctx) {
+          let ctx: AudioContext;
+          try { ctx = new Ctx({ sampleRate: 16000 } as AudioContextOptions); } catch { ctx = new Ctx(); }
+          void ctx.resume();
+          preparedAudioContextRef.current = ctx;
+        }
+      } catch { /* fall back to creating it later */ }
       const startedAt = Date.now();
       recordingStartedAtRef.current = startedAt;
       recordingPausedRef.current = false;
@@ -1361,6 +1375,7 @@ function App() {
       };
     } catch (error) {
       stream?.getTracks().forEach((track) => track.stop());
+      if (preparedAudioContextRef.current) { void preparedAudioContextRef.current.close().catch(() => {}); preparedAudioContextRef.current = null; }
       recordingStartedAtRef.current = null;
       setProject((current) => ({
         ...current,
@@ -1772,11 +1787,20 @@ function App() {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error("AudioContext is unavailable in this browser.");
 
-    let context: AudioContext;
-    try {
-      context = new AudioContextClass({ sampleRate: 16000 } as AudioContextOptions);
-    } catch {
-      context = new AudioContextClass();
+    // Prefer the context unlocked during the user gesture (see beginLive); only
+    // create a fresh one if that wasn't available.
+    let context = preparedAudioContextRef.current;
+    preparedAudioContextRef.current = null;
+    if (!context) {
+      try {
+        context = new AudioContextClass({ sampleRate: 16000 } as AudioContextOptions);
+      } catch {
+        context = new AudioContextClass();
+      }
+    }
+    // Make sure it's actually running before wiring the worklet (iOS starts suspended).
+    if (context.state !== "running") {
+      await context.resume().catch(() => { /* may need a gesture; meter/worklet still attempt */ });
     }
     await context.audioWorklet.addModule("/pcm-worklet.js?v=speechmatics-4096-20260527");
     const source = context.createMediaStreamSource(stream);
@@ -3082,7 +3106,6 @@ function AppSidebar({
             <UserCircle size={18} />
             <span>
               <strong>Sign in to save your debates</strong>
-              <small>So they're here when you come back.</small>
             </span>
           </button>
         )}
