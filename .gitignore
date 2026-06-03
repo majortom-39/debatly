@@ -35,3 +35,9 @@ ui-*.png
 # misc scratch files
 /3
 /eval report.md
+
+# internal dev notes / scratch (not for repo)
+NEXT_CHAT_PROMPT.md
+HANDOFF.md
+DEBATE_DESK_ARTIFACT_NOTES.md
+_e2e.mjs
