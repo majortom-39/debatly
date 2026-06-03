@@ -3584,16 +3584,16 @@ function OnboardingCoach({ importRef, recordRef, onDismiss }: {
   recordRef: { current: HTMLDivElement | null };
   onDismiss: () => void;
 }) {
-  const [imp, setImp] = useState<DOMRect | null>(null);
-  const [rec, setRec] = useState<DOMRect | null>(null);
+  const [step, setStep] = useState<1 | 2>(1);
+  const [rect, setRect] = useState<DOMRect | null>(null);
   useLayoutEffect(() => {
     const measure = () => {
-      setImp(importRef.current?.getBoundingClientRect() || null);
-      setRec(recordRef.current?.getBoundingClientRect() || null);
+      const el = step === 1 ? importRef.current : recordRef.current;
+      setRect(el?.getBoundingClientRect() || null);
     };
     measure();
-    const t1 = window.setTimeout(measure, 250);
-    const t2 = window.setTimeout(measure, 700);
+    const t1 = window.setTimeout(measure, 200);
+    const t2 = window.setTimeout(measure, 600);
     window.addEventListener("resize", measure);
     window.addEventListener("scroll", measure, true);
     return () => {
@@ -3601,43 +3601,43 @@ function OnboardingCoach({ importRef, recordRef, onDismiss }: {
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };
-  }, [importRef, recordRef]);
+  }, [importRef, recordRef, step]);
 
-  if (!imp && !rec) return null;
+  if (!rect) return null;
   const PAD = 6;
   const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
-  const ring = (r: DOMRect) => ({ left: r.left - PAD, top: r.top - PAD, width: r.width + PAD * 2, height: r.height + PAD * 2 });
-  const impLeft = imp ? Math.max(16, Math.min(imp.left, vw - 320)) : 0;
+  const ringStyle = { left: rect.left - PAD, top: rect.top - PAD, width: rect.width + PAD * 2, height: rect.height + PAD * 2 };
+  const leftAligned = step === 1;
+  const cardLeft = Math.max(16, Math.min(rect.left, vw - 320));
+  const cardStyle = leftAligned
+    ? { left: cardLeft, top: rect.bottom + 16 }
+    : { right: Math.max(16, vw - rect.right), top: rect.bottom + 16 };
 
   return (
     <div className="coachOverlay" role="dialog" aria-label="Getting started">
       <button type="button" className="coachScrim" aria-label="Dismiss guide" onClick={onDismiss} />
-      {imp && (
-        <>
-          <div className="coachRing" style={ring(imp)} />
-          <div className="coachCard" style={{ left: impLeft, top: imp.bottom + 16 }}>
-            <span className="coachArrow" style={{ left: Math.min(40, Math.max(16, imp.left - impLeft + 24)) }} />
-            <div className="coachCardHead">
-              <span className="coachBadge">Most accurate</span>
-              <button type="button" className="coachClose" aria-label="Close guide" onClick={onDismiss}><X size={14} /></button>
-            </div>
-            <p>Upload a recording or paste a video link to analyze a full debate — this gives the most accurate read.</p>
-          </div>
-        </>
-      )}
-      {rec && (
-        <>
-          <div className="coachRing" style={ring(rec)} />
-          <div className="coachCard coachCardRight" style={{ right: Math.max(16, vw - rec.right), top: rec.bottom + 16 }}>
-            <span className="coachArrow coachArrowRight" />
-            <div className="coachCardHead">
-              <span className="coachBadge">Live</span>
-            </div>
-            <p>Or stream a live debate and let Debatly listen in the background as it happens — high quality, in real time.</p>
-            <button type="button" className="coachDone" onClick={onDismiss}>Got it</button>
-          </div>
-        </>
-      )}
+      <div className="coachRing" style={ringStyle} />
+      <div className={`coachCard ${leftAligned ? "" : "coachCardRight"}`} style={cardStyle}>
+        <span
+          className={`coachArrow ${leftAligned ? "" : "coachArrowRight"}`}
+          style={leftAligned ? { left: Math.min(40, Math.max(16, rect.left - cardLeft + 24)) } : undefined}
+        />
+        <div className="coachCardHead">
+          <span className="coachBadge">{step === 1 ? "Most accurate" : "Live"}</span>
+          <span className="coachStep">{step} of 2</span>
+        </div>
+        {step === 1 ? (
+          <p>Upload a recording or paste a video link to analyze a full debate — this gives the most accurate read.</p>
+        ) : (
+          <p>Or stream a live debate and let Debatly listen in the background as it happens — high quality, in real time.</p>
+        )}
+        <div className="coachActions">
+          {step === 1 && <button type="button" className="coachSkip" onClick={onDismiss}>Skip</button>}
+          {step === 1
+            ? <button type="button" className="coachDone" onClick={() => setStep(2)}>Next</button>
+            : <button type="button" className="coachDone" onClick={onDismiss}>Got it</button>}
+        </div>
+      </div>
     </div>
   );
 }
