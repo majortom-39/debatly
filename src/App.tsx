@@ -424,10 +424,9 @@ function App() {
   const presentedTurns = turns;
   const projectDurationMs = getActiveProjectDurationMs(project, clockTick);
   const recordingLocked = project.status === "report_ready";
-  // Auth tiers: a guest is an anonymous Supabase user (usable, persisted, but no
-  // email); a permanent user has signed in. "signedIn" elsewhere means permanent.
+  // A guest is an anonymous Supabase user (app is fully usable, debates persist,
+  // but there's no email until they sign in). Drives the "sign in to save" banner.
   const isGuestUser = Boolean(authUser?.isAnonymous);
-  const isPermanentUser = Boolean(authUser) && !authUser?.isAnonymous;
   const sideViews = useMemo(() => buildSideViews(presentedDebate, presentedTurns), [presentedDebate, presentedTurns]);
   // Manual "Generate report" gating: only for a loaded debate that has no report yet
   // AND actually has speakers placed on a side (otherwise the report would be empty).
@@ -2427,7 +2426,7 @@ function App() {
         savedDebatesLoading={savedDebatesLoading}
         savedDebatesLoadError={savedDebatesLoadError}
         authReady={authReady}
-        signedIn={isPermanentUser}
+        signedIn={Boolean(authUser)}
         themeMode={themeMode}
         onProjectSelect={(projectId) => void loadSavedDebate(projectId)}
         onProjectRename={(target, isCurrent) => openProjectRename(target, isCurrent)}
@@ -3030,7 +3029,7 @@ function AppSidebar({
           )}
           {savedDebatesLoading && savedDebates.length === 0 && <small className="debateListStatus">Loading saved debates</small>}
           {!savedDebatesLoading && authReady && !signedIn && savedDebates.length === 0 && (
-            <small className="debateListStatus">Sign in from Settings to load saved debates.</small>
+            <small className="debateListStatus">Your saved debates will appear here.</small>
           )}
           {!savedDebatesLoading && authReady && signedIn && savedDebates.length === 0 && savedDebatesLoadError && (
             <small className="debateListStatus">Saved debates unavailable. Retrying...</small>
