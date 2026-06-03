@@ -338,7 +338,9 @@ function App() {
   const [liveAnalysis, setLiveAnalysis] = useState<LiveAnalysis | null>(null); // NEW clean pipeline payload
   const [activeTab, setActiveTab] = useState<AnalysisTab>("debatePoints");
   const [transcriptOpen, setTranscriptOpen] = useState(true);
-  const [guestBannerDismissed, setGuestBannerDismissed] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const importGuideRef = useRef<HTMLDivElement | null>(null);
+  const recordGuideRef = useRef<HTMLDivElement | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [importUrl, setImportUrl] = useState("");
@@ -425,8 +427,22 @@ function App() {
   const projectDurationMs = getActiveProjectDurationMs(project, clockTick);
   const recordingLocked = project.status === "report_ready";
   // A guest is an anonymous Supabase user (app is fully usable, debates persist,
-  // but there's no email until they sign in). Drives the "sign in to save" banner.
+  // but there's no email until they sign in). A permanent user has signed in.
   const isGuestUser = Boolean(authUser?.isAnonymous);
+  const isPermanentUser = Boolean(authUser) && !authUser?.isAnonymous;
+
+  // First-visit onboarding guides: shown once per browser to brand-new visitors
+  // (not to anyone who has signed in or already dismissed them).
+  useEffect(() => {
+    if (!authReady || isPermanentUser) return;
+    let seen = true;
+    try { seen = Boolean(localStorage.getItem("debatly_onboarding_v1")); } catch { seen = true; }
+    if (!seen) setShowOnboarding(true);
+  }, [authReady, isPermanentUser]);
+  function dismissOnboarding() {
+    try { localStorage.setItem("debatly_onboarding_v1", "1"); } catch { /* ignore */ }
+    setShowOnboarding(false);
+  }
   const sideViews = useMemo(() => buildSideViews(presentedDebate, presentedTurns), [presentedDebate, presentedTurns]);
   // Manual "Generate report" gating: only for a loaded debate that has no report yet
   // AND actually has speakers placed on a side (otherwise the report would be empty).
@@ -2427,6 +2443,7 @@ function App() {
         savedDebatesLoadError={savedDebatesLoadError}
         authReady={authReady}
         signedIn={Boolean(authUser)}
+        isGuest={isGuestUser}
         themeMode={themeMode}
         onProjectSelect={(projectId) => void loadSavedDebate(projectId)}
         onProjectRename={(target, isCurrent) => openProjectRename(target, isCurrent)}
@@ -2466,7 +2483,7 @@ function App() {
             ) : isLive ? (
               <h1>Listening for the debate</h1>
             ) : (
-              <div className="topbarImport">
+              <div className="topbarImport" ref={importGuideRef}>
                 <button type="button" className="topbarImportBtn" onClick={() => importFileInputRef.current?.click()}>
                   <Download size={16} style={{ transform: "rotate(180deg)" }} />
                   <span>Upload file</span>
@@ -2528,18 +2545,6 @@ function App() {
           </div>
         </header>
 
-        {isGuestUser && !guestBannerDismissed && (
-          <div className="guestBanner" role="status">
-            <span className="guestBannerText">You're using Debatly as a guest — sign in to save your debates and keep them across devices.</span>
-            <div className="guestBannerActions">
-              <button type="button" className="guestBannerSignIn" onClick={() => { setIsSidebarOpen(false); void refreshAudioInputs(); setShowSettings(true); }}>Sign in</button>
-              <button type="button" className="guestBannerDismiss" onClick={() => setGuestBannerDismissed(true)} aria-label="Dismiss">
-                <X size={15} />
-              </button>
-            </div>
-          </div>
-        )}
-
         <section className={`controlPanel capturePanel ${isLive ? "isRecording" : ""} ${isRecordingPaused ? "isPaused" : ""}`}>
           <PixelCard
             className="captureSignalCard"
@@ -2561,7 +2566,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="captureActions">
+              <div className="captureActions" ref={recordGuideRef}>
                 {isLive && (
                   <button className="testButton pauseButton" type="button" onClick={togglePauseLiveRecording}>
                     {isRecordingPaused ? <Play size={17} /> : <Pause size={17} />}
@@ -2683,6 +2688,9 @@ function App() {
         />
       )}
       {isExportingReportPdf && <PdfExportOverlay themeMode={themeMode} />}
+      {showOnboarding && !isLive && !isMicTesting && (
+        <OnboardingCoach importRef={importGuideRef} recordRef={recordGuideRef} onDismiss={dismissOnboarding} />
+      )}
     </main>
     </>
   );
@@ -2964,6 +2972,7 @@ function AppSidebar({
   savedDebatesLoadError,
   authReady,
   signedIn,
+  isGuest,
   themeMode,
   onProjectSelect,
   onProjectRename,
@@ -2979,6 +2988,7 @@ function AppSidebar({
   savedDebatesLoadError: string;
   authReady: boolean;
   signedIn: boolean;
+  isGuest: boolean;
   themeMode: "light" | "dark";
   onProjectSelect: (projectId: string) => void;
   onProjectRename: (target: SavedDebateProject | ProjectMeta, isCurrent: boolean) => void;
@@ -3067,6 +3077,15 @@ function AppSidebar({
       </div>
 
       <div className="sidebarAccount">
+        {isGuest && (
+          <button className="sidebarSaveCta" type="button" onClick={onSettings}>
+            <UserCircle size={18} />
+            <span>
+              <strong>Sign in to save your debates</strong>
+              <small>So they're here when you come back.</small>
+            </span>
+          </button>
+        )}
         <button className="settingsButton" type="button" onClick={onSettings}>
           <Settings size={16} />
           <span>Settings</span>
@@ -3553,6 +3572,72 @@ function ImportProgress({ job, onDismiss, onCancel, onNotify, themeMode }: { job
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// First-visit coach marks: two anchored callouts (upload/link + live record) with
+// a light scrim. Positions are measured from the live DOM so the arrows track the
+// real elements; dismiss persists in localStorage so it never shows twice.
+function OnboardingCoach({ importRef, recordRef, onDismiss }: {
+  importRef: { current: HTMLDivElement | null };
+  recordRef: { current: HTMLDivElement | null };
+  onDismiss: () => void;
+}) {
+  const [imp, setImp] = useState<DOMRect | null>(null);
+  const [rec, setRec] = useState<DOMRect | null>(null);
+  useLayoutEffect(() => {
+    const measure = () => {
+      setImp(importRef.current?.getBoundingClientRect() || null);
+      setRec(recordRef.current?.getBoundingClientRect() || null);
+    };
+    measure();
+    const t1 = window.setTimeout(measure, 250);
+    const t2 = window.setTimeout(measure, 700);
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.clearTimeout(t1); window.clearTimeout(t2);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [importRef, recordRef]);
+
+  if (!imp && !rec) return null;
+  const PAD = 6;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const ring = (r: DOMRect) => ({ left: r.left - PAD, top: r.top - PAD, width: r.width + PAD * 2, height: r.height + PAD * 2 });
+  const impLeft = imp ? Math.max(16, Math.min(imp.left, vw - 320)) : 0;
+
+  return (
+    <div className="coachOverlay" role="dialog" aria-label="Getting started">
+      <button type="button" className="coachScrim" aria-label="Dismiss guide" onClick={onDismiss} />
+      {imp && (
+        <>
+          <div className="coachRing" style={ring(imp)} />
+          <div className="coachCard" style={{ left: impLeft, top: imp.bottom + 16 }}>
+            <span className="coachArrow" style={{ left: Math.min(40, Math.max(16, imp.left - impLeft + 24)) }} />
+            <div className="coachCardHead">
+              <span className="coachBadge">Most accurate</span>
+              <button type="button" className="coachClose" aria-label="Close guide" onClick={onDismiss}><X size={14} /></button>
+            </div>
+            <p>Upload a recording or paste a video link to analyze a full debate — this gives the most accurate read.</p>
+          </div>
+        </>
+      )}
+      {rec && (
+        <>
+          <div className="coachRing" style={ring(rec)} />
+          <div className="coachCard coachCardRight" style={{ right: Math.max(16, vw - rec.right), top: rec.bottom + 16 }}>
+            <span className="coachArrow coachArrowRight" />
+            <div className="coachCardHead">
+              <span className="coachBadge">Live</span>
+            </div>
+            <p>Or stream a live debate and let Debatly listen in the background as it happens — high quality, in real time.</p>
+            <button type="button" className="coachDone" onClick={onDismiss}>Got it</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
