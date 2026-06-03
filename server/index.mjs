@@ -31,6 +31,7 @@ import { attachAuthUser, authenticateBearerToken, getAuthConfigStatus, getTokenF
 import { createSpeechmaticsLiveSttNodeConfig } from "./speechmatics-live-stt-node.mjs";
 import { createLiveAnalysisState, analyzeLive } from "./live-runner.mjs";
 import { runReportBuilder } from "./nodes/report-builder.mjs";
+import { runDebatePointBuilder } from "./nodes/debate-point-builder.mjs";
 import { startIngestFromFile, startIngestFromUrl, getIngestJob, cancelIngestJob, requestIngestEmail } from "./batch-ingest.mjs";
 const app = express();
 app.use(express.json({ limit: "12mb" }));
@@ -5339,10 +5340,10 @@ async function runDirectLedgerLivePipeline(args = {}) {
         existingPointLedger: existingDebatePoints
       });
       const debatePointSelection = await withTimeout(
-        runDebatePointBuilderNode({
-          sideBuilderPacket: debatePointPacket,
-          existingPointLedger: existingDebatePoints,
-          model: timings.selectionModel
+        runDebatePointBuilder({
+          dialogueWindows: debatePointPacket?.dialogueWindows || [],
+          speakers: debatePointPacket?.speakers || {},
+          existingPoints: existingDebatePoints
         }),
         34000,
         "Debate Point Builder timed out"
