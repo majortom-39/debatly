@@ -8353,3 +8353,55 @@ body::-webkit-scrollbar-track,
 }
 .coachSkip:hover { color: var(--el-ink); }
 .coachActions .coachDone { margin-top: 0; }
+
+/* ===================== Phone layout (<= 640px) =====================
+   Desktop renders the shell at zoom:0.75 to densify a wide screen; on a
+   phone that just makes everything tiny. Render at true scale and reflow
+   for one-handed touch use. */
+@media (max-width: 640px) {
+  .shell.productShell { zoom: 1; }
+  .reportChartFrame { zoom: 1; }
+
+  /* Topbar: hamburger + actions on the top row, import controls full-width below. */
+  .topbar {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "toggle actions"
+      "title  title";
+    gap: 12px;
+    padding: 12px 16px;
+    align-items: center;
+  }
+  .topbar > .sidebarToggle { grid-area: toggle; }
+  .topbar > .topbarActions { grid-area: actions; justify-self: end; }
+  .topbar > .topbarTitle { grid-area: title; height: auto; min-height: 0; overflow: visible; }
+  .topbarImport { width: 100%; gap: 8px; }
+  .topbarImport .topbarImportBtn { flex: 0 0 auto; }
+  .topbarImport .topbarImportUrl { flex: 1 1 55%; min-width: 0; }
+  .topbarImport .topbarImportUrl input { width: 100%; min-width: 0; }
+  .topbarImportAnalyze { flex: 0 0 auto; padding: 0 16px; }
+
+  /* Section paddings */
+  .controlPanel, .sideSummaries, .analysisDesk, .lowerGrid.transcriptOnly { padding-left: 16px; padding-right: 16px; }
+
+  /* Capture card: comfortable touch targets */
+  .recordButton, .testButton, .pauseButton { min-height: 52px; }
+
+  /* Side score cards: compact, less wasted height */
+  .sideSummaries { gap: 12px; }
+  .lscCard { padding: 14px; gap: 10px; }
+  .lscPosition { font-size: 18px; }
+  .lscScore strong { font-size: 46px; }
+
+  /* Debate desk: natural height (no giant empty box on a phone — let the page
+     scroll instead of a 1040px inner box), tabs wrap so nothing is cut off. */
+  .analysisPanel { min-height: 0; }
+  .analysisPanel .artifactColumns { min-height: 0 !important; height: auto !important; }
+  .analysisPanel .artifactScrollArea { overflow: visible !important; }
+  .analysisTabs { padding: 12px 0 10px; flex-wrap: wrap; overflow-x: visible; }
+  .analysisTabs .familyToggleAll { margin-left: 0; }
+
+  /* Transcript list shouldn't dominate the page */
+  .lowerGrid.transcriptOnly .turnList { max-height: 52vh; }
+}
