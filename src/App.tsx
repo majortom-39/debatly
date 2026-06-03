@@ -641,7 +641,12 @@ function App() {
       authUserIdRef.current = nextUser?.id || "";
       setAuthReady(true);
       if (nextUser) {
-        await refreshSavedDebates({ showLoading: false, autoLoadLatest: true });
+        const sharedId = (() => { try { return new URLSearchParams(window.location.search).get("share") || ""; } catch { return ""; } })();
+        if (sharedId) {
+          await openSharedFromUrl(sharedId);
+        } else {
+          await refreshSavedDebates({ showLoading: false, autoLoadLatest: true });
+        }
       } else {
         latestProjectAutoLoadedForUserRef.current = "";
         savedDebateRecoveryAttemptsRef.current = 0;
@@ -1671,6 +1676,55 @@ function App() {
     await generateDebateReport(sessionId);
   }
 
+  // Create (or fetch) a public share link for the current project and copy it.
+  async function copyShareLink() {
+    const projectId = projectRef.current.id;
+    if (!projectId) {
+      setStatus("Open a saved debate before sharing it.");
+      return;
+    }
+    setShareMenuOpen(false);
+    setStatus("Creating share link…");
+    try {
+      const response = await fetch(`/api/debates/${projectId}/share`, { method: "POST", headers: await authHeaders() });
+      if (!response.ok) throw new Error(await response.text());
+      const { shareId } = (await response.json()) as { shareId: string };
+      const url = `${window.location.origin}/?share=${encodeURIComponent(shareId)}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setStatus("Share link copied to clipboard");
+      } catch {
+        setStatus(`Share link: ${url}`);
+      }
+      pushEvent("Created share link");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not create a share link");
+      pushEvent("Share link creation failed");
+    }
+  }
+
+  // Open a shared link: import a copy into the current account (guest or
+  // permanent) so it lands in the project list, then load it. Idempotent server-side.
+  async function openSharedFromUrl(shareId: string) {
+    setStatus("Opening shared debate…");
+    pushEvent("Opening shared debate");
+    try {
+      const response = await fetch(`/api/shared/${encodeURIComponent(shareId)}/import`, { method: "POST", headers: await authHeaders() });
+      if (!response.ok) throw new Error(await response.text());
+      const { projectId } = (await response.json()) as { projectId: string };
+      try {
+        const u = new URL(window.location.href);
+        u.searchParams.delete("share");
+        window.history.replaceState({}, "", u.pathname + (u.search || "") + (u.hash || ""));
+      } catch { /* ignore */ }
+      await refreshSavedDebates({ showLoading: false });
+      await loadSavedDebate(projectId, { silent: true, force: true, statusMessage: "Shared debate loaded" });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not open the shared debate");
+      pushEvent("Open shared debate failed");
+    }
+  }
+
   function stopMicTest() {
     cleanupLive();
     setIsMicTesting(false);
@@ -2552,6 +2606,12 @@ function App() {
               </button>
               {shareMenuOpen && (
                 <div className="shareMenu" role="menu" aria-label="Share and download">
+                  {Boolean(liveSessionId) && (
+                    <button type="button" role="menuitem" onClick={() => void copyShareLink()}>
+                      <Share2 size={15} />
+                      <span>Copy share link</span>
+                    </button>
+                  )}
                   <button type="button" role="menuitem" onClick={() => void downloadPagePdf()} disabled={isExportingReportPdf}>
                     <FileText size={15} />
                     <span>{isExportingReportPdf ? "Building PDF…" : "Download page as PDF"}</span>

@@ -16,6 +16,7 @@
 // =============================================================================
 
 import pg from "pg";
+import { randomUUID } from "node:crypto";
 import { config } from "./config.mjs";
 
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -257,6 +258,117 @@ export async function deleteDebateProject(projectId, { ownerId = null } = {}) {
     [projectId, ownerId || null]
   );
   return rowCount > 0;
+}
+
+// =============================================================================
+// SHARING  —  public share links + cloning a shared project into an account
+// =============================================================================
+
+function newShareToken() {
+  return randomUUID().replace(/-/g, "").slice(0, 22);
+}
+
+// Ensure the (owned) project has a public share token; return it.
+export async function ensureProjectShareId(projectId, ownerId) {
+  if (!isDatabaseConfigured() || !projectId || !ownerId) return null;
+  const { rows } = await query(
+    `update public.projects
+        set share_id = coalesce(share_id, $3), updated_at = now()
+      where id = $1 and owner_id = $2::uuid
+      returning share_id`,
+    [projectId, ownerId, newShareToken()]
+  );
+  return rows[0]?.share_id || null;
+}
+
+// Public, read-only fetch of a shared project by its token (no ownership check).
+export async function getSharedProject(shareId) {
+  if (!isDatabaseConfigured() || !shareId) return null;
+  const { rows } = await query(
+    `select p.*,
+            s.id as session_id, s.status as session_status, s.started_at as session_started_at,
+            s.ended_at as session_ended_at, s.duration_ms as session_duration_ms,
+            s.transcript_turn_count, s.analysis,
+            r.report as latest_report
+       from public.projects p
+       left join lateral (
+         select * from public.sessions s where s.project_id = p.id
+         order by s.started_at desc nulls last limit 1
+       ) s on true
+       left join lateral (
+         select r.report from public.reports r where r.project_id = p.id
+         order by r.created_at desc limit 1
+       ) r on true
+      where p.share_id = $1
+      limit 1`,
+    [shareId]
+  );
+  if (!rows[0]) return null;
+  return {
+    project: rowToProjectSummary(rows[0]),
+    analysis: rows[0].analysis || null,
+    transcriptTurns: await loadTranscriptTurns(rows[0].session_id),
+    report: rows[0].latest_report || null
+  };
+}
+
+// Clone a shared project into `ownerId`'s account (idempotent per owner+share).
+// Returns the project id the caller should open (their own copy, or the original
+// if they already own it). Null if the share token is invalid.
+export async function importSharedProject(shareId, ownerId) {
+  if (!isDatabaseConfigured() || !shareId || !ownerId) return null;
+  // Locate the source project + its latest session.
+  const src = await query(
+    `select p.id as pid, p.owner_id as owner, p.title, p.status, p.topic, p.speaker_display_names,
+            s.id as sid
+       from public.projects p
+       left join lateral (
+         select id from public.sessions where project_id = p.id order by started_at desc nulls last limit 1
+       ) s on true
+      where p.share_id = $1
+      limit 1`,
+    [shareId]
+  );
+  if (!src.rows[0]) return null;
+  const source = src.rows[0];
+  // The owner opening their own link: just open the original.
+  if (source.owner && String(source.owner) === String(ownerId)) return source.pid;
+  // Already imported once → return the existing copy (no duplicate).
+  const existing = await query(
+    `select id from public.projects where owner_id = $1::uuid and source_share_id = $2 limit 1`,
+    [ownerId, shareId]
+  );
+  if (existing.rows[0]) return existing.rows[0].id;
+
+  const newProjectId = randomUUID();
+  const newSessionId = source.sid ? randomUUID() : null;
+  await query(
+    `insert into public.projects (id, owner_id, title, status, topic, speaker_display_names, source_share_id)
+     values ($1, $2::uuid, $3, $4, $5, $6::jsonb, $7)`,
+    [newProjectId, ownerId, source.title || DEFAULT_PROJECT_TITLE, source.status || "report_ready", source.topic || null,
+     JSON.stringify(source.speaker_display_names || {}), shareId]
+  );
+  if (source.sid && newSessionId) {
+    await query(
+      `insert into public.sessions (id, project_id, status, started_at, ended_at, duration_ms, transcript_turn_count, analysis, seq)
+       select $1, $2, status, started_at, ended_at, duration_ms, transcript_turn_count, analysis, seq
+         from public.sessions where id = $3`,
+      [newSessionId, newProjectId, source.sid]
+    );
+    await query(
+      `insert into public.transcript_turns (id, session_id, project_id, speaker_id, text, start_sec, end_sec)
+       select id, $1, $2, speaker_id, text, start_sec, end_sec
+         from public.transcript_turns where session_id = $3`,
+      [newSessionId, newProjectId, source.sid]
+    );
+  }
+  await query(
+    `insert into public.reports (project_id, session_id, owner_id, report, duration_ms)
+     select $1, $2, $3::uuid, report, duration_ms
+       from public.reports where project_id = $4 order by created_at desc limit 1`,
+    [newProjectId, newSessionId, ownerId, source.pid]
+  );
+  return newProjectId;
 }
 
 // --- Row → summary the frontend sidebar consumes -----------------------------

@@ -11,9 +11,12 @@ import {
   createDraftDebateProject,
   createPersistedLiveSession,
   deleteDebateProject,
+  ensureProjectShareId,
   finalizeStaleRecordingSessions,
   getDatabaseConfigStatus,
   getDebateProject,
+  getSharedProject,
+  importSharedProject,
   isDatabaseConfigured,
   listDebateProjects,
   markSessionStopped,
@@ -761,6 +764,51 @@ app.delete("/api/debates/:projectId", async (request, response) => {
     response.json({ deleted: true });
   } catch (error) {
     response.status(500).send(error instanceof Error ? error.message : "failed to delete debate");
+  }
+});
+
+// --- Sharing: create a public link, read it, import a copy --------------------
+// Owner creates/fetches a share token for one of their projects.
+app.post("/api/debates/:projectId/share", async (request, response) => {
+  try {
+    if (!requireAuth(request, response)) return;
+    const shareId = await ensureProjectShareId(request.params.projectId, request.authUser.id);
+    if (!shareId) {
+      response.status(404).send("debate not found");
+      return;
+    }
+    response.json({ shareId });
+  } catch (error) {
+    response.status(500).send(error instanceof Error ? error.message : "failed to create share link");
+  }
+});
+
+// Public, read-only view of a shared project (no auth required).
+app.get("/api/shared/:shareId", async (request, response) => {
+  try {
+    const data = await getSharedProject(request.params.shareId);
+    if (!data) {
+      response.status(404).send("shared debate not found");
+      return;
+    }
+    response.json(data);
+  } catch (error) {
+    response.status(500).send(error instanceof Error ? error.message : "failed to load shared debate");
+  }
+});
+
+// Import a shared project into the caller's account (guest or permanent).
+app.post("/api/shared/:shareId/import", async (request, response) => {
+  try {
+    if (!requireAuth(request, response)) return;
+    const projectId = await importSharedProject(request.params.shareId, request.authUser.id);
+    if (!projectId) {
+      response.status(404).send("shared debate not found");
+      return;
+    }
+    response.json({ projectId });
+  } catch (error) {
+    response.status(500).send(error instanceof Error ? error.message : "failed to import shared debate");
   }
 });
 
