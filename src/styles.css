@@ -8412,6 +8412,10 @@ body::-webkit-scrollbar-track,
     justify-content: center; min-height: 36px; border-radius: 9px;
   }
 
+  /* Phone desk: per-side blocks (header directly above that side's own cards). */
+  .artifactStack { display: grid; gap: 18px; }
+  .artifactSideBlock { display: grid; gap: 10px; align-content: start; }
+
   /* Transcript list shouldn't dominate the page */
   .lowerGrid.transcriptOnly .turnList { max-height: 52vh; }
 }

@@ -4246,12 +4246,29 @@ function LiveDeskBody({ color, side, tab, speakerLabel, isFamilyOpen, toggleFami
   );
 }
 
+// Reactive viewport check so we can render a genuinely different layout on phones
+// (not just restyle the desktop DOM).
+function useIsMobile(query = "(max-width: 640px)") {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia(query);
+    const handler = () => setIsMobile(mq.matches);
+    handler();
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", handler); else mq.removeListener(handler); };
+  }, [query]);
+  return isMobile;
+}
+
 function LiveDebateDesk({ analysis, activeTab, setActiveTab, speakerLabel }: {
   analysis: LiveAnalysis | null;
   activeTab: AnalysisTab;
   setActiveTab: (tab: AnalysisTab) => void;
   speakerLabel: (speakerId?: string) => string;
 }) {
+  const isMobile = useIsMobile();
   const counts = analysis?.counts || { debatePoints: 0, claims: 0, inconsistencies: 0 };
   const tabs: Array<{ id: AnalysisTab; label: string; count: number }> = [
     { id: "debatePoints", label: "Debate Points", count: counts.debatePoints },
@@ -4311,23 +4328,39 @@ function LiveDebateDesk({ analysis, activeTab, setActiveTab, speakerLabel }: {
           height box; row 1 = sticky .artifactHeaderGrid (2 cols), row 2 = a
           ScrollFrame whose .artifactBodyGrid scrolls when cards overflow. */}
       <div className="analysisPanel">
-        <div className="artifactColumns">
-          <div className="artifactHeaderGrid">
-            <LiveDeskHeader color="blue" side={analysis?.sides.blue} tab={activeTab} />
-            <LiveDeskHeader color="red" side={analysis?.sides.red} tab={activeTab} />
+        {isMobile ? (
+          // Phone: each side is a self-contained block — its header sits directly
+          // above its own cards (the page scrolls), instead of all headers then all
+          // bodies, which split a side's header from its content.
+          <div className="artifactStack">
+            <div className="artifactSideBlock blue">
+              <LiveDeskHeader color="blue" side={analysis?.sides.blue} tab={activeTab} />
+              <LiveDeskBody color="blue" side={analysis?.sides.blue} tab={activeTab} speakerLabel={speakerLabel} isFamilyOpen={isFamilyOpen} toggleFamily={toggleFamily} />
+            </div>
+            <div className="artifactSideBlock red">
+              <LiveDeskHeader color="red" side={analysis?.sides.red} tab={activeTab} />
+              <LiveDeskBody color="red" side={analysis?.sides.red} tab={activeTab} speakerLabel={speakerLabel} isFamilyOpen={isFamilyOpen} toggleFamily={toggleFamily} />
+            </div>
           </div>
-          <ScrollFrame
-            className="artifactScrollFrame"
-            viewportClassName="artifactScrollArea"
-            contentClassName="artifactBodyGrid"
-            tabIndex={0}
-            ariaLabel="Debate desk cards"
-            refreshKey={`${activeTab}:${counts.debatePoints}:${counts.claims}:${counts.inconsistencies}`}
-          >
-            <LiveDeskBody color="blue" side={analysis?.sides.blue} tab={activeTab} speakerLabel={speakerLabel} isFamilyOpen={isFamilyOpen} toggleFamily={toggleFamily} />
-            <LiveDeskBody color="red" side={analysis?.sides.red} tab={activeTab} speakerLabel={speakerLabel} isFamilyOpen={isFamilyOpen} toggleFamily={toggleFamily} />
-          </ScrollFrame>
-        </div>
+        ) : (
+          <div className="artifactColumns">
+            <div className="artifactHeaderGrid">
+              <LiveDeskHeader color="blue" side={analysis?.sides.blue} tab={activeTab} />
+              <LiveDeskHeader color="red" side={analysis?.sides.red} tab={activeTab} />
+            </div>
+            <ScrollFrame
+              className="artifactScrollFrame"
+              viewportClassName="artifactScrollArea"
+              contentClassName="artifactBodyGrid"
+              tabIndex={0}
+              ariaLabel="Debate desk cards"
+              refreshKey={`${activeTab}:${counts.debatePoints}:${counts.claims}:${counts.inconsistencies}`}
+            >
+              <LiveDeskBody color="blue" side={analysis?.sides.blue} tab={activeTab} speakerLabel={speakerLabel} isFamilyOpen={isFamilyOpen} toggleFamily={toggleFamily} />
+              <LiveDeskBody color="red" side={analysis?.sides.red} tab={activeTab} speakerLabel={speakerLabel} isFamilyOpen={isFamilyOpen} toggleFamily={toggleFamily} />
+            </ScrollFrame>
+          </div>
+        )}
       </div>
     </section>
   );
