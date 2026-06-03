@@ -341,6 +341,8 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const importGuideRef = useRef<HTMLDivElement | null>(null);
   const recordGuideRef = useRef<HTMLDivElement | null>(null);
+  const [toast, setToast] = useState("");
+  const toastTimerRef = useRef<number | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [importUrl, setImportUrl] = useState("");
@@ -1676,6 +1678,13 @@ function App() {
     await generateDebateReport(sessionId);
   }
 
+  // Brief, visible confirmation toast (auto-dismisses).
+  function showToast(message: string) {
+    setToast(message);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(""), 2800);
+  }
+
   // Create (or fetch) a public share link for the current project and copy it.
   async function copyShareLink() {
     const projectId = projectRef.current.id;
@@ -1692,8 +1701,10 @@ function App() {
       const url = `${window.location.origin}/?share=${encodeURIComponent(shareId)}`;
       try {
         await navigator.clipboard.writeText(url);
+        showToast("Share link copied to clipboard");
         setStatus("Share link copied to clipboard");
       } catch {
+        showToast("Share link ready — copy it from the status bar");
         setStatus(`Share link: ${url}`);
       }
       pushEvent("Created share link");
@@ -2775,6 +2786,7 @@ function App() {
       {showOnboarding && !isLive && !isMicTesting && (
         <OnboardingCoach importRef={importGuideRef} recordRef={recordGuideRef} onDismiss={dismissOnboarding} />
       )}
+      {toast && <div className="appToast" role="status" aria-live="polite">{toast}</div>}
     </main>
     </>
   );
@@ -3165,7 +3177,7 @@ function AppSidebar({
           <button className="sidebarSaveCta" type="button" onClick={onSettings}>
             <UserCircle size={18} />
             <span>
-              <strong>Sign in to save your debates</strong>
+              <strong>Sign in or sign up to save your debates</strong>
             </span>
           </button>
         )}
@@ -3919,7 +3931,7 @@ function SettingsDialog({
           {isPermanentUser && authUser?.avatarUrl ? <img src={authUser.avatarUrl} alt="" /> : <UserCircle size={36} />}
           <div>
             <strong>{isPermanentUser ? authUser?.name : (authReady ? "Guest" : "Checking session")}</strong>
-            <small>{isPermanentUser ? authUser?.email : "Sign in to save your debates"}</small>
+            <small>{isPermanentUser ? authUser?.email : "Sign in or sign up to save your debates"}</small>
           </div>
           {isPermanentUser && (
             <button type="button" className="accountIconButton" onClick={onSignOut} disabled={authWorkingProvider === "signout"} aria-label="Sign out">
@@ -4880,6 +4892,7 @@ function ReportLede({ report }: { report: DebateReport }) {
 
 // ---- The score journey (line chart) -----------------------------------------
 function ReportScoreJourney({ timeline, entries, speakerLabel, themeMode }: { timeline: ReportScoreTimeline; entries: ReportSpeakerEntry[]; speakerLabel: (s?: string) => string; themeMode: "light" | "dark" }) {
+  const isMobile = useIsMobile();
   const points = timeline?.points || [];
   if (points.length < 2) return null;
   const data = points.map((p) => ({
@@ -4904,11 +4917,11 @@ function ReportScoreJourney({ timeline, entries, speakerLabel, themeMode }: { ti
         <span className="reportChartFlag"><i />Debate starts at {minuteToClock(startMinute)}</span>
       </div>
       <div className="reportChartFrame">
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={data} margin={{ top: 16, right: 30, bottom: 14, left: 10 }}>
+        <ResponsiveContainer width="100%" height={isMobile ? 230 : 300}>
+          <LineChart data={data} margin={{ top: 16, right: isMobile ? 12 : 30, bottom: 14, left: isMobile ? 0 : 10 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={c.hairline} />
-            <XAxis dataKey="minute" type="number" domain={[startMinute, maxMinute]} tickFormatter={fmtMinute} tick={{ fontSize: 12, fill: c.muted }} tickMargin={12} axisLine={{ stroke: c.hairline }} tickLine={false} />
-            <YAxis tick={{ fontSize: 12, fill: c.muted }} axisLine={false} tickLine={false} width={42} tickMargin={10} allowDecimals={false} domain={["dataMin - 3", "dataMax + 4"]} />
+            <XAxis dataKey="minute" type="number" domain={[startMinute, maxMinute]} tickFormatter={fmtMinute} tick={{ fontSize: isMobile ? 10 : 12, fill: c.muted }} tickMargin={isMobile ? 8 : 12} axisLine={{ stroke: c.hairline }} tickLine={false} />
+            <YAxis tick={{ fontSize: isMobile ? 10 : 12, fill: c.muted }} axisLine={false} tickLine={false} width={isMobile ? 30 : 42} tickMargin={isMobile ? 6 : 10} allowDecimals={false} domain={["dataMin - 3", "dataMax + 4"]} />
             <ReferenceLine y={0} stroke={c.hairlineStrong} strokeWidth={1} />
             {marks.map((e, i) => (
               <ReferenceLine
@@ -4917,7 +4930,7 @@ function ReportScoreJourney({ timeline, entries, speakerLabel, themeMode }: { ti
                 stroke={e.side === "red" ? c.red : e.side === "blue" ? c.blue : c.hairlineStrong}
                 strokeDasharray="2 5"
                 strokeOpacity={0.5}
-                label={{ value: String(i + 1), position: "top", fontSize: 10, fontWeight: 600, fill: e.side === "red" ? c.red : e.side === "blue" ? c.blue : c.muted }}
+                label={isMobile ? undefined : { value: String(i + 1), position: "top", fontSize: 10, fontWeight: 600, fill: e.side === "red" ? c.red : e.side === "blue" ? c.blue : c.muted }}
               />
             ))}
             <Tooltip content={<JourneyTooltip />} cursor={{ stroke: c.hairlineStrong, strokeWidth: 1 }} />
@@ -4964,23 +4977,26 @@ function JourneyTooltip({ active, payload, label }: { active?: boolean; payload?
 
 // ---- The speakers (bar chart + judging cards) -------------------------------
 function ReportSpeakerSection({ speakers, speakerLabel, themeMode }: { speakers: ReportSpeaker[]; speakerLabel: (s?: string) => string; themeMode: "light" | "dark" }) {
+  const isMobile = useIsMobile();
   if (!speakers.length) return null;
   const data = speakers.map((s) => ({ name: speakerLabel(s.speakerId), score: s.score, side: s.side }));
   const c = getChartColors(themeMode);
   return (
     <div className="reportSpeakerBlock">
       <div className="reportCard reportChartCard">
+        {/* On phones the bar labels can't fit (too many speakers) — hide the axis
+            labels and let the per-speaker cards below act as the legend. */}
         <div className="reportChartFrame">
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={data} margin={{ top: 24, right: 16, bottom: 12, left: 8 }} barCategoryGap="28%">
+          <ResponsiveContainer width="100%" height={isMobile ? 210 : 260}>
+            <BarChart data={data} margin={{ top: 24, right: isMobile ? 8 : 16, bottom: isMobile ? 4 : 12, left: isMobile ? 0 : 8 }} barCategoryGap="28%">
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={c.hairline} />
-              <XAxis dataKey="name" tickFormatter={abbrevSpeakerLabel} tick={{ fontSize: 11, fill: c.muted }} tickMargin={10} axisLine={{ stroke: c.hairline }} tickLine={false} interval={0} />
-              <YAxis tick={{ fontSize: 12, fill: c.muted }} axisLine={false} tickLine={false} width={40} tickMargin={8} allowDecimals={false} domain={["dataMin - 4", "dataMax + 4"]} />
+              <XAxis dataKey="name" tickFormatter={abbrevSpeakerLabel} tick={isMobile ? false : { fontSize: 11, fill: c.muted }} height={isMobile ? 8 : 30} tickMargin={10} axisLine={{ stroke: c.hairline }} tickLine={false} interval={0} />
+              <YAxis tick={{ fontSize: isMobile ? 10 : 12, fill: c.muted }} axisLine={false} tickLine={false} width={isMobile ? 30 : 40} tickMargin={8} allowDecimals={false} domain={["dataMin - 4", "dataMax + 4"]} />
               <ReferenceLine y={0} stroke={c.hairlineStrong} strokeWidth={1} />
               <Tooltip content={<SpeakerBarTooltip />} cursor={{ fill: CHART_CURSOR_FILL }} />
               <Bar dataKey="score" radius={[4, 4, 0, 0]} maxBarSize={56} isAnimationActive={false}>
                 {data.map((d, i) => <Cell key={i} fill={d.side === "blue" ? c.blue : c.red} />)}
-                <LabelList dataKey="score" position="top" style={{ fill: c.ink, fontSize: 12, fontWeight: 700 }} />
+                <LabelList dataKey="score" position="top" style={{ fill: c.ink, fontSize: isMobile ? 10 : 12, fontWeight: 700 }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>

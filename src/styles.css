@@ -8376,6 +8376,9 @@ body::-webkit-scrollbar-track,
   .topbar > .sidebarToggle { grid-area: toggle; }
   .topbar > .topbarActions { grid-area: actions; justify-self: end; }
   .topbar > .topbarTitle { grid-area: title; height: auto; min-height: 0; overflow: visible; }
+  /* The auto-fitting featured quote can't size to the small topbar — hide it on
+     phones (the report below shows quotes prominently). */
+  .topbar .quoteHeadline { display: none; }
   .topbarImport { width: 100%; gap: 8px; }
   .topbarImport .topbarImportBtn { flex: 0 0 auto; }
   .topbarImport .topbarImportUrl { flex: 1 1 55%; min-width: 0; }
@@ -8418,4 +8421,19 @@ body::-webkit-scrollbar-track,
 
   /* Transcript list shouldn't dominate the page */
   .lowerGrid.transcriptOnly .turnList { max-height: 52vh; }
+}
+
+/* Confirmation toast (e.g. "Share link copied") */
+.appToast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  z-index: 9500; max-width: calc(100vw - 32px);
+  padding: 11px 18px; border-radius: 999px;
+  background: var(--el-ink); color: var(--el-surface);
+  font-size: 13px; font-weight: 650; text-align: center;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
+  animation: appToastIn 160ms ease;
+}
+@keyframes appToastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
