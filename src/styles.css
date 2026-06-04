@@ -8363,10 +8363,10 @@ body::-webkit-scrollbar-track,
   font-size: 14px;
   line-height: 1.45;
   font-style: italic;
-  color: var(--blue);
+  /* Primary text color: white in dark mode, near-black in light mode. */
+  color: var(--el-ink);
   border-top: 1px solid var(--el-hairline);
 }
-html[data-theme="dark"] .liveCaptionBottom { color: #7fb2c4; }
 .liveInterimCaret {
   display: inline-block;
   margin-left: 1px;
