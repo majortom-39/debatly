@@ -2720,31 +2720,51 @@ function App() {
             </summary>
             <StabilizerContextNotice windows={stabilizerContextWindows} />
             {(() => {
-              const finals = presentedTurns.filter((turn) => turn.isFinal).slice(-120);
-              // Live "forming" line: show the most recent Speechmatics partial as it
-              // streams in word-by-word, so words appear instantly (the speaker-labeled
-              // final replaces it a moment later once diarization settles). A freshness
-              // guard hides a partial that's already been finalized.
-              const lastFinalAt = finals.length ? Number(finals[finals.length - 1].at || 0) : 0;
+              const rawFinals = presentedTurns.filter((turn) => turn.isFinal).slice(-300);
+              // Stitch consecutive same-speaker pieces into ONE growing bubble
+              // (display only — underlying turns untouched). Matches the test app's
+              // appendTranscript merge, so a speaker's bubble fills in live instead
+              // of appearing as many fragments.
+              const MERGE_GAP_SEC = 2;
+              const merged: typeof rawFinals = [];
+              for (const turn of rawFinals) {
+                const last = merged[merged.length - 1];
+                const start = Number(turn.startSec);
+                const lastEnd = last ? Number(last.endSec) : NaN;
+                const sameSpeaker = Boolean(last && last.speakerId === turn.speakerId);
+                const closeInTime = !Number.isFinite(start) || !Number.isFinite(lastEnd) || (start - lastEnd) <= MERGE_GAP_SEC;
+                if (sameSpeaker && closeInTime) {
+                  last.text = `${last.text} ${turn.text}`.replace(/\s+/g, " ").trim();
+                  if (Number.isFinite(Number(turn.endSec))) last.endSec = Number(turn.endSec);
+                } else {
+                  merged.push({ ...turn });
+                }
+              }
+              const display = merged.slice(-120);
+              // Live caption above the list: the freshest partial words streaming in,
+              // hidden once its speaker-labeled final has landed.
+              const lastFinalAt = rawFinals.length ? Number(rawFinals[rawFinals.length - 1].at || 0) : 0;
               const interimTurn = isLive
                 ? [...presentedTurns].reverse().find((turn) => !turn.isFinal && (turn.text || "").trim())
                 : null;
               const interim = interimTurn && Number(interimTurn.at || 0) >= lastFinalAt ? interimTurn : null;
               return (
-                <TranscriptStream open={transcriptOpen} itemCount={finals.length + (interim ? 1 : 0)}>
-                  {finals.length === 0 && !interim ? (
-                    <p className="empty">Live transcript will appear here.</p>
-                  ) : (
-                    <>
-                      {finals.map((turn) => (
-                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                      ))}
-                      {interim && (
-                        <p className="liveInterimLine" aria-live="polite">{interim.text}<span className="liveInterimCaret">…</span></p>
-                      )}
-                    </>
+                <>
+                  {isLive && (
+                    <div className="liveCaption" aria-live="polite">
+                      {interim ? <>{interim.text}<span className="liveInterimCaret">…</span></> : null}
+                    </div>
                   )}
-                </TranscriptStream>
+                  <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
+                    {display.length === 0 ? (
+                      <p className="empty">Live transcript will appear here.</p>
+                    ) : (
+                      display.map((turn) => (
+                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
+                      ))
+                    )}
+                  </TranscriptStream>
+                </>
               );
             })()}
           </details>

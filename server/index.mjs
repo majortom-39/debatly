@@ -1067,7 +1067,6 @@ wss.on("connection", async (ws, request) => {
   let pyannoteWindowSeq = 0;
   let pyannoteLastWindowAt = 0;
   let pyannoteCoverageEndSec = 0;
-  let workerOpenTurn = null;
   let pendingSpeechGroups = [];
   let pendingSpeechWords = [];
   let pendingSpeechWordSeq = 0;
@@ -1638,7 +1637,6 @@ wss.on("connection", async (ws, request) => {
     }
     gracefulStopTimer = setTimeout(() => {
       const finish = () => {
-        flushWorkerOpenTurn();
         sendSpeechmaticsStats("stop_timeout");
         if (ws.readyState === WebSocket.OPEN) ws.close();
       };
@@ -2379,12 +2377,11 @@ wss.on("connection", async (ws, request) => {
     return out;
   }
 
-  // Emit turns produced by the worker, coalesced per SPEAKER TURN (Utterr-style):
-  // keep appending a speaker's words to the open bubble and close it when the
-  // speaker CHANGES. We do NOT wait for sentence-ending punctuation (that added
-  // latency). A high word cap is kept only as a safety so a very long single
-  // speaker turn still renders progressively instead of hanging until the other
-  // speaker talks.
+  // Emit each worker turn immediately as its own final (no server-side turn
+  // buffering). Like the test app, small finished pieces are sent right away with
+  // their speaker; the FRONTEND stitches consecutive same-speaker pieces into one
+  // growing bubble. This makes the speaker's labeled bubble appear within ~1s and
+  // fill in live, instead of showing up all at once when the turn ends.
   function emitWorkerTurns(turns = []) {
     for (const turn of turns) {
       const text = String(turn?.text || "").trim();
@@ -2392,39 +2389,16 @@ wss.on("connection", async (ws, request) => {
       const speakerId = String(turn.speaker || "Unknown");
       const start = Number.isFinite(Number(turn.start)) ? Number(turn.start) : undefined;
       const end = Number.isFinite(Number(turn.end)) ? Number(turn.end) : undefined;
-
-      if (workerOpenTurn && workerOpenTurn.speakerId !== speakerId) flushWorkerOpenTurn();
-      if (!workerOpenTurn) {
-        workerOpenTurn = { speakerId, text: "", startSec: start, endSec: end, wordCount: 0 };
-      }
-      workerOpenTurn.text = workerOpenTurn.text ? `${workerOpenTurn.text} ${text}` : text;
-      if (workerOpenTurn.startSec === undefined) workerOpenTurn.startSec = start;
-      if (end !== undefined) workerOpenTurn.endSec = end;
-      workerOpenTurn.wordCount += Number(turn.word_count || wordCount(text));
-
-      // Flush only as a safety for very long monologues; normal flush is the
-      // speaker-change check at the top of the loop.
-      if (workerOpenTurn.wordCount >= 60) {
-        flushWorkerOpenTurn();
-      }
+      speechStats.pyannoteAssignedWords += Number(turn.word_count || wordCount(text));
+      sendFinalTranscriptSegment({
+        speakerId,
+        text,
+        words: [{ word: text, startSec: start, endSec: end, rawSpeaker: `pyannote:${speakerId}` }],
+        rawSpeakers: [`pyannote:${speakerId}`],
+        unassignedWords: 0,
+        speakerSource: "pyannote"
+      });
     }
-  }
-
-  function flushWorkerOpenTurn() {
-    if (!workerOpenTurn) return;
-    const open = workerOpenTurn;
-    workerOpenTurn = null;
-    const text = String(open.text || "").trim();
-    if (!text) return;
-    speechStats.pyannoteAssignedWords += open.wordCount;
-    sendFinalTranscriptSegment({
-      speakerId: open.speakerId,
-      text,
-      words: [{ word: text, startSec: open.startSec, endSec: open.endSec, rawSpeaker: `pyannote:${open.speakerId}` }],
-      rawSpeakers: [`pyannote:${open.speakerId}`],
-      unassignedWords: 0,
-      speakerSource: "pyannote"
-    });
   }
 
   function routeFinalToWorker(event, sessionSeq = activeSpeechSeq) {
