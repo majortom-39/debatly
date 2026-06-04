@@ -1,8 +1,27 @@
 #!/usr/bin/env python
-"""Persistent pyannote diarization worker for live PCM windows.
+"""Live speaker diarization worker (Utterr online-clustering engine).
 
-Protocol: newline-delimited JSON over stdin/stdout. The worker loads the
-pyannote pipeline once, then accepts base64 PCM16 mono windows.
+This replaces the per-window full-pipeline worker with a STATEFUL streaming
+engine: it keeps persistent speaker profiles (voice fingerprints) across the
+whole session, so a speaker keeps the same label for the entire debate instead
+of being re-diarized independently every window.
+
+Pipeline per session (one worker process == one live session):
+  Silero VAD  ->  pyannote/wespeaker embedding  ->  online profile clustering
+
+Protocol (unchanged, newline-delimited JSON over stdin/stdout) so the existing
+Node `PyannoteLiveDiarizationNode` keeps working without changes:
+  in : {"id","type":"diarize_pcm16","sampleRate","windowStartSec","audioBase64",...}
+  out: {"id","type":"result","segments":[{start,end,duration,speaker}],
+        "exclusiveSpeakerDiarization":[...], "speakerDiarization":[...],
+        "summary":{...}, "timings":{...}, "audio":{...}}
+  in : {"id","type":"stop"}  -> out: {"id","type":"stopped"}
+
+Node sends overlapping rolling windows (a tail buffer of the last N seconds).
+This worker tracks absolute time and only consumes the NEW audio past what it
+has already processed, so overlapping windows are not double-counted. Returned
+segment times are ABSOLUTE seconds (aligned to the audio/Speechmatics timeline),
+so Node does not add any offset.
 """
 
 from __future__ import annotations
@@ -15,33 +34,65 @@ import sys
 import time
 import traceback
 import warnings
+from collections import deque
 from fractions import Fraction
 
 import numpy as np
 import torch
-from scipy.signal import resample_poly
 
 os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "0")
-warnings.filterwarnings("ignore", message=".*torchcodec is not installed correctly.*", category=UserWarning)
-warnings.filterwarnings("ignore", message=".*degrees of freedom is <= 0.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*torchcodec is not installed correctly.*")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pyannote\.audio\.core\.io")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pyannote\.audio\.models\.blocks\.pooling")
-
-from pyannote.audio import Pipeline  # noqa: E402
-
-
-DEFAULT_MODEL = "pyannote/speaker-diarization-community-1"
-DEFAULT_SAMPLE_RATE = 16_000
+warnings.filterwarnings("ignore", message=".*degrees of freedom is <= 0.*")
 
 
-def env_int(name: str) -> int | None:
-    value = os.getenv(name, "").strip()
-    if not value:
-        return None
-    return int(value)
+# --- Tunables (env-overridable, defaults are Utterr's proven live settings) ----
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
 
 
-def token_from_env() -> str | None:
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+SAMPLE_RATE = env_int("PYANNOTE_SAMPLE_RATE", 16_000)
+WINDOW_SECONDS = env_float("DIA_WINDOW_SECONDS", 1.5)
+STEP_SECONDS = env_float("DIA_STEP_SECONDS", 0.5)
+ASSIGN_THRESHOLD = env_float("DIA_ASSIGN_THRESHOLD", 0.30)
+UPDATE_THRESHOLD = env_float("DIA_UPDATE_THRESHOLD", 0.44)
+PENDING_CLUSTER_DISTANCE = env_float("DIA_PENDING_CLUSTER_DISTANCE", 0.80)
+MIN_NEW_SPEAKER_WINDOWS = env_int("DIA_MIN_NEW_SPEAKER_WINDOWS", 6)
+MAX_PROFILE_EMBEDDINGS = env_int("DIA_MAX_PROFILE_EMBEDDINGS", 220)
+MAX_SPEAKERS = env_int("DIA_MAX_SPEAKERS", 20)
+VAD_THRESHOLD = env_float("DIA_VAD_THRESHOLD", 0.5)
+NEW_SPEAKER_RECHECK_THRESHOLD = env_float("DIA_NEW_SPEAKER_RECHECK_THRESHOLD", 0.55)
+# How much recent audio to keep buffered for windowing (profiles persist beyond this).
+KEEP_SECONDS = env_float("DIA_KEEP_SECONDS", 45.0)
+
+DEFAULT_EMBED_MODEL = os.getenv("PYANNOTE_EMBED_MODEL", "pyannote/wespeaker-voxceleb-resnet34-LM")
+
+
+def l2_normalize(vector: np.ndarray) -> np.ndarray:
+    vector = np.asarray(vector, dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(vector))
+    if norm <= 1e-12:
+        return vector
+    return vector / norm
+
+
+def write_message(message: dict) -> None:
+    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def token_from_env():
     for name in ("HF_TOKEN", "HUGGINGFACE_TOKEN", "HUGGINGFACE_HUB_TOKEN", "PYANNOTE_HF_TOKEN"):
         value = os.getenv(name, "").strip()
         if value:
@@ -52,101 +103,314 @@ def token_from_env() -> str | None:
 def select_device(requested: str) -> torch.device:
     if requested == "cuda":
         if not torch.cuda.is_available():
-            raise RuntimeError("PYANNOTE_DEVICE=cuda requested, but torch.cuda.is_available() is false.")
+            raise RuntimeError("PYANNOTE_DEVICE=cuda requested, but CUDA is unavailable.")
         return torch.device("cuda")
     if requested == "auto" and torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
 
 
-def write_message(message: dict) -> None:
-    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
-
-
-def pcm16_to_waveform(audio_bytes: bytes, sample_rate: int, target_sample_rate: int) -> tuple[torch.Tensor, int, float]:
+def pcm16_to_float_mono(audio_bytes: bytes, sample_rate: int) -> np.ndarray:
+    """Decode little-endian PCM16 mono to float32 [-1, 1] at SAMPLE_RATE."""
     if not audio_bytes:
-        return torch.zeros((1, 0), dtype=torch.float32), target_sample_rate, 0.0
+        return np.zeros(0, dtype=np.float32)
     samples = np.frombuffer(audio_bytes, dtype="<i2").astype(np.float32) / 32768.0
-    original_duration = float(samples.shape[0] / max(1, sample_rate))
-    if sample_rate != target_sample_rate and samples.size:
-        ratio = Fraction(target_sample_rate, sample_rate).limit_denominator(1000)
+    if sample_rate != SAMPLE_RATE and samples.size:
+        ratio = Fraction(SAMPLE_RATE, sample_rate).limit_denominator(1000)
+        from scipy.signal import resample_poly
+
         samples = resample_poly(samples, ratio.numerator, ratio.denominator).astype(np.float32, copy=False)
-        sample_rate = target_sample_rate
-    waveform = torch.from_numpy(np.ascontiguousarray(samples)).unsqueeze(0)
-    return waveform, sample_rate, original_duration
+    return np.ascontiguousarray(np.clip(np.nan_to_num(samples, copy=False), -1.0, 1.0))
 
 
-def annotation_segments(annotation, offset_sec: float = 0.0) -> list[dict]:
-    if annotation is None:
-        return []
-    segments: list[dict] = []
-    for segment, _track, speaker in annotation.itertracks(yield_label=True):
-        start = float(segment.start) + offset_sec
-        end = float(segment.end) + offset_sec
-        if not math.isfinite(start) or not math.isfinite(end) or end <= start:
-            continue
-        segments.append({
-            "start": round(start, 3),
-            "end": round(end, 3),
-            "duration": round(end - start, 3),
-            "speaker": str(speaker),
-        })
-    segments.sort(key=lambda item: (item["start"], item["end"], item["speaker"]))
-    return segments
+# ------------------------------------------------------------------------------
+# Diarization engine (models loaded once)
+# ------------------------------------------------------------------------------
+class DiarizationEngine:
+    def __init__(self) -> None:
+        requested_device = os.getenv("PYANNOTE_DEVICE", "auto")
+        self.device = select_device(requested_device)
+        self.embed_model = DEFAULT_EMBED_MODEL
+        self._load_vad()
+        self._load_embedder()
+
+    def _load_vad(self) -> None:
+        # Prefer the pip package; fall back to torch.hub (both ship Silero VAD).
+        try:
+            from silero_vad import load_silero_vad, get_speech_timestamps
+
+            self.vad_model = load_silero_vad()
+            self._get_speech_ts = get_speech_timestamps
+            return
+        except Exception:
+            pass
+        model, utils = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            trust_repo=True,
+            onnx=False,
+        )
+        self.vad_model = model
+        self._get_speech_ts = utils[0]
+
+    def _load_embedder(self) -> None:
+        from pyannote.audio import Inference, Model
+
+        token = token_from_env()
+        try:
+            model = Model.from_pretrained(self.embed_model, use_auth_token=token or False)
+        except TypeError:
+            # Older/newer pyannote signature uses `token=`.
+            model = Model.from_pretrained(self.embed_model, token=token) if token else Model.from_pretrained(self.embed_model)
+        model = model.to(self.device)
+        self.embedding_inference = Inference(model, window="whole", device=self.device)
+
+    def is_speech(self, audio: np.ndarray) -> bool:
+        if audio.shape[0] < int(0.4 * SAMPLE_RATE):
+            return False
+        with torch.no_grad():
+            timestamps = self._get_speech_ts(
+                torch.from_numpy(audio.astype(np.float32)),
+                self.vad_model,
+                threshold=VAD_THRESHOLD,
+                sampling_rate=SAMPLE_RATE,
+                min_speech_duration_ms=150,
+                min_silence_duration_ms=120,
+                speech_pad_ms=80,
+            )
+        return len(timestamps) > 0
+
+    def embed(self, audio: np.ndarray) -> np.ndarray:
+        waveform = torch.from_numpy(audio.astype(np.float32)).unsqueeze(0)
+        with torch.no_grad():
+            embedding = self.embedding_inference({"waveform": waveform, "sample_rate": SAMPLE_RATE})
+        return l2_normalize(np.asarray(embedding, dtype=np.float32).reshape(-1))
 
 
-def summarize_segments(segments: list[dict]) -> dict:
-    by_speaker: dict[str, dict] = {}
-    for segment in segments:
-        speaker = segment["speaker"]
-        entry = by_speaker.setdefault(speaker, {"turns": 0, "durationSec": 0.0})
-        entry["turns"] += 1
-        entry["durationSec"] += float(segment["duration"])
-    for entry in by_speaker.values():
-        entry["durationSec"] = round(entry["durationSec"], 3)
-    return {
-        "speakerCount": len(by_speaker),
-        "segmentCount": len(segments),
-        "bySpeaker": dict(sorted(by_speaker.items())),
-    }
+class Profile:
+    __slots__ = ("label", "embeddings")
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.embeddings = deque(maxlen=MAX_PROFILE_EMBEDDINGS)
+
+    def centroid(self) -> np.ndarray:
+        return l2_normalize(np.mean(np.stack(self.embeddings, axis=0), axis=0))
+
+    def add(self, embedding: np.ndarray) -> None:
+        self.embeddings.append(embedding)
 
 
-def diarization_kwargs(settings: dict) -> dict:
-    num_speakers = settings.get("numSpeakers", env_int("PYANNOTE_NUM_SPEAKERS"))
-    min_speakers = settings.get("minSpeakers", env_int("PYANNOTE_MIN_SPEAKERS"))
-    max_speakers = settings.get("maxSpeakers", env_int("PYANNOTE_MAX_SPEAKERS"))
-    kwargs = {}
-    if num_speakers is not None:
-        kwargs["num_speakers"] = int(num_speakers)
-        return kwargs
-    if min_speakers is not None:
-        kwargs["min_speakers"] = int(min_speakers)
-    if max_speakers is not None:
-        kwargs["max_speakers"] = int(max_speakers)
-    return kwargs
+class PendingWindow:
+    __slots__ = ("start", "end", "embedding")
+
+    def __init__(self, start: float, end: float, embedding: np.ndarray) -> None:
+        self.start = start
+        self.end = end
+        self.embedding = embedding
+
+
+# ------------------------------------------------------------------------------
+# Stateful session: absolute-time streaming online clustering
+# ------------------------------------------------------------------------------
+class StreamingSession:
+    def __init__(self, engine: DiarizationEngine) -> None:
+        self.engine = engine
+        self.buffer = np.zeros(0, dtype=np.float32)
+        self.buffer_start_abs = 0.0  # absolute time of buffer[0]
+        self.cursor_abs = None       # next window start to process (absolute)
+        self.profiles: list[Profile] = []
+        self.pending: list[PendingWindow] = []
+        # timeline: list of (start_abs, end_abs, label) for assigned speech windows
+        self.timeline: list[tuple[float, float, str]] = []
+
+    @property
+    def buffer_end_abs(self) -> float:
+        return self.buffer_start_abs + self.buffer.shape[0] / SAMPLE_RATE
+
+    def ingest(self, samples: np.ndarray, window_start_abs: float, window_end_abs: float) -> None:
+        """Append only the audio newer than what we've already buffered."""
+        if samples.size == 0:
+            return
+        if self.buffer.size == 0:
+            self.buffer = samples.copy()
+            self.buffer_start_abs = window_start_abs
+            if self.cursor_abs is None:
+                self.cursor_abs = window_start_abs
+            self._trim()
+            return
+
+        current_end = self.buffer_end_abs
+        if window_end_abs <= current_end + 1e-6:
+            return  # nothing new
+        if window_start_abs > current_end + 0.1:
+            # Gap (Node trimmed its buffer / we missed audio). Jump forward.
+            self.buffer = samples.copy()
+            self.buffer_start_abs = window_start_abs
+            if self.cursor_abs is None or self.cursor_abs < window_start_abs:
+                self.cursor_abs = window_start_abs
+            self._trim()
+            return
+        # Take the tail of `samples` past current_end.
+        offset = int(round((current_end - window_start_abs) * SAMPLE_RATE))
+        offset = max(0, min(offset, samples.shape[0]))
+        new_samples = samples[offset:]
+        if new_samples.size:
+            self.buffer = np.concatenate([self.buffer, new_samples])
+        self._trim()
+
+    def _trim(self) -> None:
+        max_samples = int(KEEP_SECONDS * SAMPLE_RATE)
+        if self.buffer.shape[0] <= max_samples:
+            return
+        drop = self.buffer.shape[0] - max_samples
+        self.buffer = self.buffer[drop:]
+        self.buffer_start_abs += drop / SAMPLE_RATE
+        if self.cursor_abs is not None and self.cursor_abs < self.buffer_start_abs:
+            self.cursor_abs = self.buffer_start_abs
+
+    def process(self) -> None:
+        """Run sliding windows over freshly available buffered audio."""
+        if self.cursor_abs is None:
+            return
+        while self.cursor_abs + WINDOW_SECONDS <= self.buffer_end_abs + 1e-6:
+            start_abs = self.cursor_abs
+            end_abs = start_abs + WINDOW_SECONDS
+            local_start = int(round((start_abs - self.buffer_start_abs) * SAMPLE_RATE))
+            local_end = local_start + int(round(WINDOW_SECONDS * SAMPLE_RATE))
+            if local_start < 0:
+                self.cursor_abs += STEP_SECONDS
+                continue
+            window = self.buffer[local_start:local_end]
+            if window.shape[0] >= int(WINDOW_SECONDS * SAMPLE_RATE * 0.8):
+                self._process_window(window, start_abs, end_abs)
+            self.cursor_abs += STEP_SECONDS
+
+    def _process_window(self, audio: np.ndarray, start: float, end: float) -> None:
+        if not self.engine.is_speech(audio):
+            return
+        embedding = self.engine.embed(audio)
+        if embedding is None:
+            return
+        label = self._assign(start, end, embedding)
+        if label not in {"Pending", "Silence"}:
+            self.timeline.append((start, end, label))
+        self._promote_pending()
+
+    def _assign(self, start: float, end: float, embedding: np.ndarray) -> str:
+        if not self.profiles:
+            return self._new_profile([embedding]).label
+        profile, similarity = self._best_profile(embedding)
+        if profile is not None and similarity >= ASSIGN_THRESHOLD:
+            if similarity >= UPDATE_THRESHOLD:
+                profile.add(embedding)
+            return profile.label
+        self.pending.append(PendingWindow(start, end, embedding))
+        return "Pending"
+
+    def _best_profile(self, embedding: np.ndarray):
+        if not self.profiles:
+            return None, -1.0
+        scores = [(profile, float(np.dot(profile.centroid(), embedding))) for profile in self.profiles]
+        return max(scores, key=lambda item: item[1])
+
+    def _new_profile(self, embeddings: list[np.ndarray]) -> Profile:
+        profile = Profile(f"Speaker {len(self.profiles) + 1}")
+        for embedding in embeddings:
+            profile.add(embedding)
+        self.profiles.append(profile)
+        return profile
+
+    def _promote_pending(self) -> None:
+        if len(self.pending) < MIN_NEW_SPEAKER_WINDOWS or len(self.profiles) >= MAX_SPEAKERS:
+            return
+        embeddings = np.stack([p.embedding for p in self.pending], axis=0)
+        if len(self.pending) == MIN_NEW_SPEAKER_WINDOWS:
+            distances = 1.0 - np.matmul(embeddings, embeddings.T)
+            upper = distances[np.triu_indices_from(distances, k=1)]
+            cluster_indices = list(range(len(self.pending))) if float(np.mean(upper)) <= PENDING_CLUSTER_DISTANCE else []
+        else:
+            from sklearn.cluster import AgglomerativeClustering
+
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=PENDING_CLUSTER_DISTANCE,
+                metric="cosine",
+                linkage="average",
+            )
+            labels = clustering.fit_predict(embeddings)
+            counts = {label: int(np.sum(labels == label)) for label in set(labels)}
+            best_label = max(counts, key=counts.get)
+            cluster_indices = [i for i, label in enumerate(labels) if label == best_label]
+            if len(cluster_indices) < MIN_NEW_SPEAKER_WINDOWS:
+                cluster_indices = []
+
+        if not cluster_indices:
+            if len(self.pending) > 24:
+                self.pending = self.pending[-12:]
+            return
+
+        promoted = [self.pending[i] for i in cluster_indices]
+        promoted_embeddings = [item.embedding for item in promoted]
+        promoted_centroid = l2_normalize(np.mean(np.stack(promoted_embeddings, axis=0), axis=0))
+        profile, profile_similarity = self._best_profile(promoted_centroid)
+        if profile is not None and profile_similarity >= NEW_SPEAKER_RECHECK_THRESHOLD:
+            for embedding in promoted_embeddings:
+                profile.add(embedding)
+        else:
+            profile = self._new_profile(promoted_embeddings)
+
+        keep = set(cluster_indices)
+        self.pending = [item for i, item in enumerate(self.pending) if i not in keep]
+        for item in promoted:
+            self.timeline.append((item.start, item.end, profile.label))
+
+    def segments_in(self, window_start: float, window_end: float) -> list[dict]:
+        """Merge timeline windows into segments overlapping [start, end]."""
+        if not self.timeline:
+            return []
+        ordered = sorted(self.timeline, key=lambda item: (item[0], item[1]))
+        merged: list[list] = []
+        for start, end, label in ordered:
+            if merged and merged[-1][2] == label and start <= merged[-1][1] + STEP_SECONDS + 1e-6:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end, label])
+        out = []
+        for start, end, label in merged:
+            if end <= window_start or start >= window_end:
+                continue
+            if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+                continue
+            out.append({
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "duration": round(end - start, 3),
+                "speaker": label,
+            })
+        return out
+
+    def speaker_summary(self) -> dict:
+        by_speaker = {p.label: {"windows": len(p.embeddings)} for p in self.profiles}
+        return {"speakerCount": len(self.profiles), "bySpeaker": by_speaker}
 
 
 def main() -> int:
-    model_name = os.getenv("PYANNOTE_MODEL", DEFAULT_MODEL)
-    target_sample_rate = int(os.getenv("PYANNOTE_SAMPLE_RATE", str(DEFAULT_SAMPLE_RATE)))
-    requested_device = os.getenv("PYANNOTE_DEVICE", "auto")
-
     started = time.time()
-    device = select_device(requested_device)
-    token = token_from_env()
-    pipeline = Pipeline.from_pretrained(model_name, token=token) if token else Pipeline.from_pretrained(model_name)
-    pipeline.to(device)
+    engine = DiarizationEngine()
+    session = StreamingSession(engine)
     write_message({
         "type": "ready",
-        "model": model_name,
-        "device": str(device),
-        "sampleRate": target_sample_rate,
+        "engine": "utterr-online-clustering",
+        "embedModel": engine.embed_model,
+        "device": str(engine.device),
+        "sampleRate": SAMPLE_RATE,
         "loadSec": round(time.time() - started, 3),
         "settings": {
-            "numSpeakers": env_int("PYANNOTE_NUM_SPEAKERS"),
-            "minSpeakers": env_int("PYANNOTE_MIN_SPEAKERS"),
-            "maxSpeakers": env_int("PYANNOTE_MAX_SPEAKERS"),
+            "windowSeconds": WINDOW_SECONDS,
+            "stepSeconds": STEP_SECONDS,
+            "assignThreshold": ASSIGN_THRESHOLD,
+            "minNewSpeakerWindows": MIN_NEW_SPEAKER_WINDOWS,
         },
     })
 
@@ -154,72 +418,58 @@ def main() -> int:
         line = line.strip()
         if not line:
             continue
+        request = None
         try:
             request = json.loads(line)
             request_id = str(request.get("id") or "")
-            if request.get("type") == "stop":
+            kind = request.get("type")
+            if kind == "stop":
                 write_message({"id": request_id, "type": "stopped"})
                 return 0
-            if request.get("type") != "diarize_pcm16":
+            if kind == "reset":
+                session = StreamingSession(engine)
+                write_message({"id": request_id, "type": "reset_done"})
+                continue
+            if kind != "diarize_pcm16":
                 write_message({"id": request_id, "type": "error", "message": "Unknown request type."})
                 continue
 
             run_started = time.time()
             audio_bytes = base64.b64decode(str(request.get("audioBase64") or ""))
-            input_sample_rate = int(request.get("sampleRate") or target_sample_rate)
+            input_sample_rate = int(request.get("sampleRate") or SAMPLE_RATE)
             window_start_sec = float(request.get("windowStartSec") or 0.0)
-            waveform, sample_rate, duration_sec = pcm16_to_waveform(audio_bytes, input_sample_rate, target_sample_rate)
-            kwargs = diarization_kwargs(request.get("settings") or {})
+            samples = pcm16_to_float_mono(audio_bytes, input_sample_rate)
+            duration_sec = samples.shape[0] / SAMPLE_RATE if samples.size else 0.0
+            window_end_sec = window_start_sec + duration_sec
 
-            if waveform.shape[1] <= 0:
-                write_message({
-                    "id": request_id,
-                    "type": "result",
-                    "segments": [],
-                    "speakerDiarization": [],
-                    "exclusiveSpeakerDiarization": [],
-                    "summary": {"regular": summarize_segments([]), "exclusive": summarize_segments([])},
-                    "timings": {"diarizationSec": 0.0},
-                    "audio": {"durationSec": 0.0, "sampleRate": sample_rate},
-                })
-                continue
+            if samples.size:
+                session.ingest(samples, window_start_sec, window_end_sec)
+                session.process()
 
-            output = pipeline({"waveform": waveform, "sample_rate": sample_rate}, **kwargs)
-            regular_segments = annotation_segments(output.speaker_diarization, window_start_sec)
-            exclusive_segments = annotation_segments(getattr(output, "exclusive_speaker_diarization", None), window_start_sec)
+            segments = session.segments_in(window_start_sec, window_end_sec)
             write_message({
                 "id": request_id,
                 "type": "result",
-                "provider": "pyannote",
-                "model": model_name,
-                "device": str(device),
+                "provider": "utterr",
+                "engine": "utterr-online-clustering",
+                "device": str(engine.device),
                 "audio": {
                     "durationSec": round(duration_sec, 3),
-                    "sampleRate": sample_rate,
+                    "sampleRate": SAMPLE_RATE,
                     "bytes": len(audio_bytes),
                 },
-                "settings": {
-                    "numSpeakers": kwargs.get("num_speakers"),
-                    "minSpeakers": kwargs.get("min_speakers"),
-                    "maxSpeakers": kwargs.get("max_speakers"),
-                    "exclusive": True,
-                },
                 "timings": {"diarizationSec": round(time.time() - run_started, 3)},
-                "summary": {
-                    "regular": summarize_segments(regular_segments),
-                    "exclusive": summarize_segments(exclusive_segments),
-                },
-                "speakerDiarization": regular_segments,
-                "exclusiveSpeakerDiarization": exclusive_segments,
-                "segments": exclusive_segments,
+                "summary": {"regular": session.speaker_summary(), "exclusive": session.speaker_summary()},
+                "speakerDiarization": segments,
+                "exclusiveSpeakerDiarization": segments,
+                "segments": segments,
             })
         except Exception as error:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
-            write_message({
-                "id": str(locals().get("request", {}).get("id", "")) if isinstance(locals().get("request"), dict) else "",
-                "type": "error",
-                "message": str(error),
-            })
+            rid = ""
+            if isinstance(request, dict):
+                rid = str(request.get("id", ""))
+            write_message({"id": rid, "type": "error", "message": str(error)})
     return 0
 
 

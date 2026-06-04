@@ -29,6 +29,7 @@ import {
 } from "./store.mjs";
 import { attachAuthUser, authenticateBearerToken, getAuthConfigStatus, getTokenFromUrl, isAuthConfigured, requireAuth } from "./auth.mjs";
 import { createSpeechmaticsLiveSttNodeConfig } from "./speechmatics-live-stt-node.mjs";
+import { createPyannoteLiveDiarizationNode } from "./pyannote-live-diarization-node.mjs";
 import { createLiveAnalysisState, analyzeLive } from "./live-runner.mjs";
 import { runReportBuilder } from "./nodes/report-builder.mjs";
 import { runDebatePointBuilder } from "./nodes/debate-point-builder.mjs";
@@ -652,7 +653,9 @@ app.get("/api/config", (_request, response) => {
     pipelineBuild: DIRECT_ANALYSIS_ARCHITECTURE,
     speechProvider: "Speechmatics Realtime STT",
     speechModel: config.speechmaticsOperatingPoint,
-    speakerDiarization: "Speechmatics realtime speaker diarization",
+    speakerDiarization: config.liveDiarizationProvider === "pyannote"
+      ? "Local pyannote/wespeaker online diarization (Speechmatics words)"
+      : "Speechmatics realtime speaker diarization",
     researchOrder: ["Firecrawl Search retrieval", "Gemini-lite verdict synthesis", "Vertex Gemini grounding fallback"]
   });
 });
@@ -1054,7 +1057,8 @@ wss.on("connection", async (ws, request) => {
   const speakerMap = new Map();
   const recoveryAudio = [];
   const pyannoteSegments = [];
-  const pyannoteOnlyDiarization = false;
+  const usePyannoteLiveDiarization = config.liveDiarizationProvider === "pyannote" && config.pyannoteLiveEnabled;
+  const pyannoteOnlyDiarization = usePyannoteLiveDiarization && config.pyannoteOnlyDiarization;
   let pyannoteNode = null;
   let pyannoteReady = false;
   let pyannoteAudioChunks = [];
@@ -1130,12 +1134,59 @@ wss.on("connection", async (ws, request) => {
   const speechmaticsNodeConfig = createSpeechmaticsLiveSttNodeConfig(config);
   console.log("[speechmatics config]", JSON.stringify(speechmaticsNodeConfig.summary));
   logLiveEvent("speechmatics_config", speechmaticsNodeConfig.summary);
-  ws.send(JSON.stringify({ type: "diarization_status", status: "warming", message: "Speechmatics speaker diarization starting" }));
+  ws.send(JSON.stringify({
+    type: "diarization_status",
+    status: "warming",
+    message: usePyannoteLiveDiarization
+      ? "Local pyannote speaker diarization starting"
+      : "Speechmatics speaker diarization starting"
+  }));
+
+  if (usePyannoteLiveDiarization) startPyannoteLiveDiarization();
 
   connectSpeechProvider("initial");
 
   function connectSpeechProvider(reason) {
     connectSpeechmatics(reason);
+  }
+
+  function startPyannoteLiveDiarization() {
+    try {
+      pyannoteNode = createPyannoteLiveDiarizationNode(config, {
+        onLog: (entry) => {
+          const level = entry?.level === "warn" ? "warn" : "log";
+          const text = typeof entry?.message === "string" ? entry.message : JSON.stringify(entry?.message ?? entry);
+          console[level](`[pyannote live worker] ${text}`);
+        }
+      });
+    } catch (error) {
+      pyannoteNode = null;
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[pyannote live] failed to spawn worker: ${message}`);
+      logLiveEvent("pyannote_spawn_failed", { message });
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "diarization_status", status: "warming", message: "Falling back to Speechmatics speaker diarization" }));
+      }
+      return;
+    }
+    pyannoteNode.readyPromise.then((info) => {
+      if (closing || ws.readyState !== WebSocket.OPEN) return;
+      pyannoteReady = true;
+      logLiveEvent("pyannote_ready", { device: info?.device, engine: info?.engine, loadSec: info?.loadSec });
+      console.log(`[pyannote live] worker ready: ${JSON.stringify({ device: info?.device, engine: info?.engine, loadSec: info?.loadSec })}`);
+      ws.send(JSON.stringify({ type: "diarization_status", status: "ready", message: "Local pyannote speaker diarization ready" }));
+      maybeSchedulePyannoteWindow(false);
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[pyannote live] worker did not become ready: ${message}`);
+      logLiveEvent("pyannote_ready_failed", { message });
+      try { pyannoteNode?.stop(); } catch { /* worker may already be closing */ }
+      pyannoteNode = null;
+      pyannoteReady = false;
+      if (!closing && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "diarization_status", status: "warming", message: "Falling back to Speechmatics speaker diarization" }));
+      }
+    });
   }
 
   function connectSpeechmatics(reason) {
@@ -1443,6 +1494,7 @@ wss.on("connection", async (ws, request) => {
     } else {
       bufferRecoveryAudio(audioBuffer);
     }
+    appendPyannoteAudio(audioBuffer);
   });
 
   ws.on("close", () => {

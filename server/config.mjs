@@ -18,11 +18,16 @@ export const config = {
   pyannoteBatchModel: process.env.PYANNOTE_MODEL_BATCH || "precision-2",
   pyannoteBatchTranscriptionModel: process.env.PYANNOTE_BATCH_STT_MODEL || "faster-whisper-large-v3-turbo",
   pyannoteLiveEnabled: String(process.env.PYANNOTE_LIVE_ENABLED || "true").toLowerCase() !== "false",
+  // Live speaker diarization source: "speechmatics" (default, raw STT labels) or
+  // "pyannote" (local Utterr online-clustering worker; Speechmatics still does words).
+  liveDiarizationProvider: String(process.env.LIVE_DIARIZATION_PROVIDER || "speechmatics").trim().toLowerCase(),
   pyannotePythonPath: process.env.PYANNOTE_PYTHON_PATH || "python",
   pyannoteModel: process.env.PYANNOTE_MODEL || "pyannote/speaker-diarization-community-1",
   pyannoteSampleRate: Number(process.env.PYANNOTE_SAMPLE_RATE || 16000),
   pyannoteDevice: process.env.PYANNOTE_DEVICE || "auto",
-  pyannoteOnlyDiarization: String(process.env.PYANNOTE_ONLY_DIARIZATION || "true").toLowerCase() !== "false",
+  // Default false: when pyannote can't place a word, fall back to the Speechmatics
+  // label instead of dropping it. Set PYANNOTE_ONLY_DIARIZATION=true for pure mode.
+  pyannoteOnlyDiarization: String(process.env.PYANNOTE_ONLY_DIARIZATION || "false").toLowerCase() === "true",
   pyannoteNumSpeakers: optionalNumber(process.env.PYANNOTE_NUM_SPEAKERS),
   pyannoteMinSpeakers: optionalNumber(process.env.PYANNOTE_MIN_SPEAKERS),
   pyannoteMaxSpeakers: optionalNumber(process.env.PYANNOTE_MAX_SPEAKERS),
