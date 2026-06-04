@@ -2720,12 +2720,13 @@ function App() {
             </summary>
             <StabilizerContextNotice windows={stabilizerContextWindows} />
             {(() => {
-              const rawFinals = presentedTurns.filter((turn) => turn.isFinal).slice(-300);
-              // Stitch consecutive same-speaker pieces into ONE growing bubble
-              // (display only — underlying turns untouched). Matches the test app's
-              // appendTranscript merge, so a speaker's bubble fills in live instead
-              // of appearing as many fragments.
-              const MERGE_GAP_SEC = 2;
+              const rawFinals = presentedTurns.filter((turn) => turn.isFinal).slice(-400);
+              // ONE bubble per speaker run: merge consecutive same-speaker pieces
+              // into a single growing bubble, splitting only when the SPEAKER changes
+              // (a generous 15s guard prevents a huge accidental same-label silence
+              // from making one giant bubble). The bubble grows by ~0.7s confirmed
+              // pieces — no separate live line, no churn.
+              const MERGE_GAP_SEC = 15;
               const merged: typeof rawFinals = [];
               for (const turn of rawFinals) {
                 const last = merged[merged.length - 1];
@@ -2741,30 +2742,16 @@ function App() {
                 }
               }
               const display = merged.slice(-120);
-              // Live caption above the list: the freshest partial words streaming in,
-              // hidden once its speaker-labeled final has landed.
-              const lastFinalAt = rawFinals.length ? Number(rawFinals[rawFinals.length - 1].at || 0) : 0;
-              const interimTurn = isLive
-                ? [...presentedTurns].reverse().find((turn) => !turn.isFinal && (turn.text || "").trim())
-                : null;
-              const interim = interimTurn && Number(interimTurn.at || 0) >= lastFinalAt ? interimTurn : null;
               return (
-                <>
-                  {isLive && (
-                    <div className="liveCaption" aria-live="polite">
-                      {interim ? <>{interim.text}<span className="liveInterimCaret">…</span></> : null}
-                    </div>
+                <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
+                  {display.length === 0 ? (
+                    <p className="empty">Live transcript will appear here.</p>
+                  ) : (
+                    display.map((turn) => (
+                      <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
+                    ))
                   )}
-                  <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
-                    {display.length === 0 ? (
-                      <p className="empty">Live transcript will appear here.</p>
-                    ) : (
-                      display.map((turn) => (
-                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                      ))
-                    )}
-                  </TranscriptStream>
-                </>
+                </TranscriptStream>
               );
             })()}
           </details>
