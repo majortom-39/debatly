@@ -1050,6 +1050,11 @@ wss.on("connection", async (ws, request) => {
   let audioBytes = 0;
   let transcriptEvents = 0;
   const speechStats = createSpeechmaticsStats();
+  // Per-layer word-token counters to localize any word loss (verification step):
+  // raw Speechmatics finals -> words sent to worker -> worker-returned turns ->
+  // turns actually emitted to the UI. Equal counts == no drop (boundary issue);
+  // a drop between two layers points at exactly where words are lost.
+  const liveDiag = { sttFinalTokens: 0, wordsToWorker: 0, workerTurnTokens: 0, emittedTokens: 0 };
   const sttProviderLabel = "Speechmatics";
   const sttProviderEventName = "speechmatics";
   const sttStatsProvider = "speechmatics";
@@ -2386,6 +2391,7 @@ wss.on("connection", async (ws, request) => {
     for (const turn of turns) {
       const text = String(turn?.text || "").trim();
       if (!text) continue;
+      liveDiag.workerTurnTokens += countWordsInText(text);
       const speakerId = String(turn.speaker || "Unknown");
       const start = Number.isFinite(Number(turn.start)) ? Number(turn.start) : undefined;
       const end = Number.isFinite(Number(turn.end)) ? Number(turn.end) : undefined;
@@ -2404,6 +2410,8 @@ wss.on("connection", async (ws, request) => {
   function routeFinalToWorker(event, sessionSeq = activeSpeechSeq) {
     mergeSpeechmaticsEventStats(speechStats, speechmaticsEventStats(event));
     const words = extractWordsForWorker(event);
+    liveDiag.sttFinalTokens += countWordsInText(transcriptTextFromSpeechmaticsResults(event.results || event.words || []));
+    liveDiag.wordsToWorker += countWordsInText(words.map((word) => word.text).join(" "));
     if (!words.length) return;
     const node = pyannoteNode;
     if (!node) {
@@ -2584,6 +2592,7 @@ wss.on("connection", async (ws, request) => {
         return;
       }
       speechStats.emittedFinalTurns += 1;
+      liveDiag.emittedTokens += countWordsInText(text);
       const bounds = speechSegmentTimeBounds(segment.words);
       const wordSummary = summarizeSpeechmaticsWords(segment.words);
       const turn = {
@@ -2622,6 +2631,11 @@ wss.on("connection", async (ws, request) => {
       : 0;
     const payload = { type: "stt_stats", provider: sttStatsProvider, reason, stats: speechStats };
     console.log(`[${packagingLogLabel} stats] ${JSON.stringify(payload)}`);
+    console.log(`[live-diag] ${JSON.stringify({
+      reason,
+      ...liveDiag,
+      note: "word-token counts per layer; equal == no drop (boundary issue), a gap shows where words are lost"
+    })}`);
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
     }
@@ -10315,6 +10329,12 @@ function shouldStitchTurns(previous, current) {
 
 function wordCount(text = "") {
   return String(text || "").trim().split(/\s+/).filter(Boolean).length;
+}
+
+// Count real word tokens (ignore pure-punctuation tokens) so per-layer counts are
+// comparable even when punctuation is attached vs separate.
+function countWordsInText(text = "") {
+  return String(text || "").split(/\s+/).filter((token) => /[A-Za-z0-9]/.test(token)).length;
 }
 
 function applyTopicAndSides(state, candidate = {}) {
