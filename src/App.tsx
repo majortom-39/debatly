@@ -2742,16 +2742,32 @@ function App() {
                 }
               }
               const display = merged.slice(-120);
+              // Live partial line, pinned at the BOTTOM under the newest bubble:
+              // streams the current (not-yet-confirmed) words, cleared once its
+              // final lands and merges into the bubble above. (Test app's separate
+              // partial line, moved below for natural reading order.)
+              const lastFinalAt = rawFinals.length ? Number(rawFinals[rawFinals.length - 1].at || 0) : 0;
+              const interimTurn = isLive
+                ? [...presentedTurns].reverse().find((turn) => !turn.isFinal && (turn.text || "").trim())
+                : null;
+              const interimText = interimTurn && Number(interimTurn.at || 0) >= lastFinalAt
+                ? String(interimTurn.text || "").trim()
+                : "";
               return (
-                <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
-                  {display.length === 0 ? (
-                    <p className="empty">Live transcript will appear here.</p>
-                  ) : (
-                    display.map((turn) => (
-                      <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                    ))
+                <>
+                  <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
+                    {display.length === 0 && !interimText ? (
+                      <p className="empty">Live transcript will appear here.</p>
+                    ) : (
+                      display.map((turn) => (
+                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
+                      ))
+                    )}
+                  </TranscriptStream>
+                  {isLive && interimText && (
+                    <div className="liveCaptionBottom" aria-live="polite">{interimText}<span className="liveInterimCaret">…</span></div>
                   )}
-                </TranscriptStream>
+                </>
               );
             })()}
           </details>
