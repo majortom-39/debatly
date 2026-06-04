@@ -25,9 +25,9 @@
 
 ## 🎬 Demo
 
-<video src="https://github.com/majortom-39/debatly/raw/main/docs/demo.mp4" controls width="100%"></video>
-
-> If the player doesn't load above, **[▶ watch the demo here](https://github.com/majortom-39/debatly/raw/main/docs/demo.mp4)**.
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/9c60a4b5-516f-4638-8bb3-2f93314d84b9" controls width="80%"></video>
+</p>
 
 ---
 
