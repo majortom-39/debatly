@@ -125,6 +125,36 @@ class PyannoteLiveDiarizationNode {
     });
   }
 
+  // Send a batch of Speechmatics final words; returns any turns ready to emit.
+  async addWords(words = []) {
+    return this._request({ type: "add_words", words });
+  }
+
+  // Force-flush remaining buffered turns (e.g. on stop).
+  async flushTurns(force = true) {
+    return this._request({ type: "flush", force: Boolean(force) });
+  }
+
+  async _request(message) {
+    if (!this.config.enabled) return null;
+    if (this.closed || !this.child?.stdin?.writable) throw new Error("pyannote live worker is not writable");
+    await this.readyPromise;
+    const id = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`pyannote live request '${message.type}' timed out after ${this.config.requestTimeoutMs}ms`));
+      }, Math.max(1000, this.config.requestTimeoutMs));
+      this.pending.set(id, { resolve, reject, timer });
+      this.child.stdin.write(`${JSON.stringify({ id, ...message })}\n`, (error) => {
+        if (!error) return;
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      });
+    });
+  }
+
   stop() {
     this.closed = true;
     for (const entry of this.pending.values()) {

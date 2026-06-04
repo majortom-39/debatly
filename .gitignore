@@ -49,3 +49,7 @@ DESIGN.md
 
 # email templates — paste into Supabase dashboard, not for repo
 supabase/templates/
+
+# Python bytecode
+__pycache__/
+*.pyc
