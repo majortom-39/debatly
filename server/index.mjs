@@ -2379,9 +2379,12 @@ wss.on("connection", async (ws, request) => {
     return out;
   }
 
-  // Emit turns produced by the worker, coalesced into one bubble per SENTENCE
-  // (flush on sentence-ending punctuation, speaker change, or a length cap) so the
-  // UI and downstream nodes get clean sentences instead of word-by-word fragments.
+  // Emit turns produced by the worker, coalesced per SPEAKER TURN (Utterr-style):
+  // keep appending a speaker's words to the open bubble and close it when the
+  // speaker CHANGES. We do NOT wait for sentence-ending punctuation (that added
+  // latency). A high word cap is kept only as a safety so a very long single
+  // speaker turn still renders progressively instead of hanging until the other
+  // speaker talks.
   function emitWorkerTurns(turns = []) {
     for (const turn of turns) {
       const text = String(turn?.text || "").trim();
@@ -2399,7 +2402,9 @@ wss.on("connection", async (ws, request) => {
       if (end !== undefined) workerOpenTurn.endSec = end;
       workerOpenTurn.wordCount += Number(turn.word_count || wordCount(text));
 
-      if (/[.!?]["'”’)\]]?\s*$/.test(workerOpenTurn.text) || workerOpenTurn.wordCount >= 45) {
+      // Flush only as a safety for very long monologues; normal flush is the
+      // speaker-change check at the top of the loop.
+      if (workerOpenTurn.wordCount >= 60) {
         flushWorkerOpenTurn();
       }
     }
