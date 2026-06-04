@@ -2403,7 +2403,7 @@ wss.on("connection", async (ws, request) => {
         rawSpeakers: [`pyannote:${speakerId}`],
         unassignedWords: 0,
         speakerSource: "pyannote"
-      });
+      }, { allowShort: true });
     }
   }
 
@@ -2583,9 +2583,12 @@ wss.on("connection", async (ws, request) => {
     }
   }
 
-  function sendFinalTranscriptSegment(segment) {
+  function sendFinalTranscriptSegment(segment, { allowShort = false } = {}) {
     const text = segment.text || joinWords((segment.words || []).map((word) => word.word));
-    if (!shouldEmitTranscriptSegment(text)) return;
+    // allowShort: the pyannote worker emits small per-piece turns that the UI
+    // MERGES into one bubble, so we must keep every piece (even 1-word/filler) or
+    // words vanish from the middle of sentences. Only drop genuinely empty text.
+    if (allowShort ? !text.trim() : !shouldEmitTranscriptSegment(text)) return;
       if (ws.readyState !== WebSocket.OPEN) {
         speechStats.undeliveredFinalTurns += 1;
         console.log(`[${packagingLogLabel}] ${JSON.stringify({ stage: "undelivered_final", speakerId: segment.speakerId, rawSpeakers: segment.rawSpeakers || summarizeSpeechmaticsWords(segment.words).labels, unassignedWords: segment.unassignedWords || summarizeSpeechmaticsWords(segment.words).unassignedWords, words: wordCount(text), preview: text.slice(0, 120) })}`);
