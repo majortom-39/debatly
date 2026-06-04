@@ -1054,7 +1054,7 @@ wss.on("connection", async (ws, request) => {
   // raw Speechmatics finals -> words sent to worker -> worker-returned turns ->
   // turns actually emitted to the UI. Equal counts == no drop (boundary issue);
   // a drop between two layers points at exactly where words are lost.
-  const liveDiag = { sttFinalTokens: 0, wordsToWorker: 0, workerTurnTokens: 0, emittedTokens: 0 };
+  const liveDiag = { sttFinalTokens: 0, wordsToWorker: 0, workerTurnTokens: 0, emittedTokens: 0, worker: null };
   const sttProviderLabel = "Speechmatics";
   const sttProviderEventName = "speechmatics";
   const sttStatsProvider = "speechmatics";
@@ -1830,6 +1830,7 @@ wss.on("connection", async (ws, request) => {
     }).then((result) => {
       pyannoteCoverageEndSec = Math.max(pyannoteCoverageEndSec, Number(result?.coverageEndSec || 0));
       speechStats.pyannoteWindowsCompleted += 1;
+      if (result?.diag) liveDiag.worker = result.diag;
       // Worker owns assignment now: emit any turns it flushed as coverage advanced.
       emitWorkerTurns(result?.turns || []);
     }).catch((error) => {

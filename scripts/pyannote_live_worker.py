@@ -255,6 +255,12 @@ class StreamingSession:
         self.last_speaker = "Unknown"
         # buffered Speechmatics word batches awaiting label-delay flush
         self.pending_chunks: list[dict] = []
+        # continuity diagnostics (prove no gaps/dupes/timeline drift in the feed)
+        self.diag_gap_sec = 0.0          # total skipped audio (gaps between batches)
+        self.diag_jumps = 0              # number of gap-jumps (lost contiguity)
+        self.diag_dupe_trimmed_sec = 0.0 # overlap correctly de-duplicated
+        self.diag_windows = 0            # diarization windows processed
+        self.diag_full_dupe_sec = 0.0    # whole batches that were pure duplicates
 
     @property
     def buffer_end_abs(self) -> float:
@@ -274,18 +280,22 @@ class StreamingSession:
 
         current_end = self.buffer_end_abs
         if window_end_abs <= current_end + 1e-6:
-            return  # nothing new
+            self.diag_full_dupe_sec += max(0.0, window_end_abs - window_start_abs)
+            return  # nothing new (whole batch already buffered)
         if window_start_abs > current_end + 0.1:
             # Gap (Node trimmed its buffer / we missed audio). Jump forward.
+            self.diag_jumps += 1
+            self.diag_gap_sec += (window_start_abs - current_end)
             self.buffer = samples.copy()
             self.buffer_start_abs = window_start_abs
             if self.cursor_abs is None or self.cursor_abs < window_start_abs:
                 self.cursor_abs = window_start_abs
             self._trim()
             return
-        # Take the tail of `samples` past current_end.
+        # Take the tail of `samples` past current_end (overlap is de-duplicated).
         offset = int(round((current_end - window_start_abs) * SAMPLE_RATE))
         offset = max(0, min(offset, samples.shape[0]))
+        self.diag_dupe_trimmed_sec += offset / SAMPLE_RATE
         new_samples = samples[offset:]
         if new_samples.size:
             self.buffer = np.concatenate([self.buffer, new_samples])
@@ -317,6 +327,7 @@ class StreamingSession:
             if window.shape[0] >= int(WINDOW_SECONDS * SAMPLE_RATE * 0.8):
                 self._process_window(window, start_abs, end_abs)
             self.coverage_end_abs = max(self.coverage_end_abs, end_abs)
+            self.diag_windows += 1
             self.cursor_abs += STEP_SECONDS
 
     def _process_window(self, audio: np.ndarray, start: float, end: float) -> None:
@@ -428,6 +439,21 @@ class StreamingSession:
     def speaker_summary(self) -> dict:
         by_speaker = {p.label: {"windows": len(p.embeddings)} for p in self.profiles}
         return {"speakerCount": len(self.profiles), "bySpeaker": by_speaker}
+
+    def diag(self) -> dict:
+        # Continuity proof for the rolling feed: gapSec/jumps should stay ~0, and
+        # cursorAligned shows windows start on exact 0.5s steps from session start.
+        cursor = self.cursor_abs if self.cursor_abs is not None else 0.0
+        return {
+            "gapSec": round(self.diag_gap_sec, 3),
+            "jumps": self.diag_jumps,
+            "dupeTrimmedSec": round(self.diag_dupe_trimmed_sec, 3),
+            "fullDupeSec": round(self.diag_full_dupe_sec, 3),
+            "windows": self.diag_windows,
+            "cursorAbs": round(cursor, 3),
+            "cursorStepRemainder": round((cursor / STEP_SECONDS) - round(cursor / STEP_SECONDS), 4),
+            "coverageEndSec": round(self.coverage_end_abs, 3),
+        }
 
     # --- Utterr word -> speaker assignment (always picks a diarized speaker) ----
     def _stable_speakers(self) -> set:
@@ -633,6 +659,7 @@ def main() -> int:
                 "type": "result",
                 "turns": turns,
                 "coverageEndSec": round(session.coverage_end_abs, 3),
+                "diag": session.diag(),
                 "provider": "utterr",
                 "engine": "utterr-online-clustering",
                 "device": str(engine.device),
