@@ -15,21 +15,62 @@
 
 import { createPipelineState, runPacket, groupTurnsIntoPackets, PACKET_SECONDS } from "./pipeline.mjs";
 import { explainScore } from "./nodes/scoring-engine.mjs";
+import { runSpeakerReconciler } from "./nodes/speaker-reconciler.mjs";
 import { createTrace } from "./shared/trace.mjs";
+
+// Conservative LLM speaker-label correction (see nodes/speaker-reconciler.mjs).
+// Set RECONCILE_SPEAKERS=false to disable instantly.
+const RECONCILE_SPEAKERS = String(process.env.RECONCILE_SPEAKERS || "true").toLowerCase() !== "false";
+const RECONCILE_WINDOW_TURNS = 60; // how many recent turns the reconciler looks at
 
 export function createLiveAnalysisState() {
   const state = createPipelineState();
   state.processedPacketCount = 0;
+  state.speakerCorrections = {}; // turnId -> corrected speaker label
   return state;
+}
+
+// Rewrite each turn's speaker to its corrected label (if any), keeping the
+// original on rawSpeakerId so the UI can show the strike-through.
+function applySpeakerCorrections(state, turns) {
+  const map = state.speakerCorrections || {};
+  return (turns || []).map((t) => {
+    const corrected = map[t.id];
+    return corrected && corrected !== t.speakerId
+      ? { ...t, speakerId: corrected, rawSpeakerId: t.speakerId }
+      : t;
+  });
+}
+
+// Ask the reconciler about the recent window and merge any high-confidence
+// corrections into the running map.
+async function reconcileSpeakers(state, allTurns, trace) {
+  const recent = (allTurns || []).slice(-RECONCILE_WINDOW_TURNS).map((t) => ({
+    id: t.id,
+    speaker: state.speakerCorrections?.[t.id] || t.speakerId, // current best label
+    text: t.text
+  }));
+  const { corrections } = await runSpeakerReconciler({ turns: recent, trace }).catch(() => ({ corrections: [] }));
+  for (const c of corrections) state.speakerCorrections[c.turnId] = c.correctedSpeaker;
 }
 
 // Process any newly-settled packets from the session's accumulated turns.
 // allTurns: [{ id, speakerId, text, startSec, endSec }] (final turns only).
 // flush=true (on stop) also processes the last, still-filling packet.
 export async function analyzeLive(state, allTurns, { flush = false, trace = null } = {}) {
-  const packets = groupTurnsIntoPackets(allTurns);
-  // Keep the last packet "open" while live (still filling); process it only on flush.
-  const lastProcessable = flush ? packets.length : Math.max(0, packets.length - 1);
+  if (!state.speakerCorrections) state.speakerCorrections = {};
+  const rawPackets = groupTurnsIntoPackets(allTurns);
+  const lastProcessable = flush ? rawPackets.length : Math.max(0, rawPackets.length - 1);
+  const hasNewSettled = lastProcessable > state.processedPacketCount;
+
+  // Discover speaker corrections only when new audio has settled (bounds cost to
+  // ~one extra call per packet), then apply them so EVERY downstream node and the
+  // artifacts use the corrected speaker labels.
+  if (RECONCILE_SPEAKERS && (hasNewSettled || flush)) {
+    await reconcileSpeakers(state, allTurns, trace || createTrace("live"));
+  }
+  const corrected = RECONCILE_SPEAKERS ? applySpeakerCorrections(state, allTurns) : allTurns;
+  const packets = groupTurnsIntoPackets(corrected);
 
   for (let i = state.processedPacketCount; i < lastProcessable; i += 1) {
     await runPacket(state, packets[i], { trace: trace || createTrace("live"), nextPacket: packets[i + 1] || null });
@@ -101,6 +142,7 @@ export function buildLivePayload(state) {
     },
     speakers: state.speakers,
     scoreTimeline: state.scoreTimeline || [],
+    speakerCorrections: state.speakerCorrections || {},
     counts: {
       debatePoints: state.debatePoints.length,
       claims: state.claims.length,

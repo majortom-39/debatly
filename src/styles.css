@@ -8437,3 +8437,6 @@ body::-webkit-scrollbar-track,
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
+
+/* Corrected diarization label in the transcript: original struck, corrected after */
+.turnSpeakerOriginal { text-decoration: line-through; color: var(--el-muted); opacity: 0.7; margin-right: 6px; font-weight: 500; }
