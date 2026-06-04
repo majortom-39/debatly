@@ -41,3 +41,6 @@ NEXT_CHAT_PROMPT.md
 HANDOFF.md
 DEBATE_DESK_ARTIFACT_NOTES.md
 _e2e.mjs
+
+# local-only reference docs (not for repo)
+docs/speechmatics-realtime.md
