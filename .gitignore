@@ -46,3 +46,6 @@ _e2e.mjs
 docs/speechmatics-realtime.md
 ARCHITECTURE.md
 DESIGN.md
+
+# email templates — paste into Supabase dashboard, not for repo
+supabase/templates/
