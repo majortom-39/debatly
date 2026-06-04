@@ -2721,14 +2721,28 @@ function App() {
             <StabilizerContextNotice windows={stabilizerContextWindows} />
             {(() => {
               const finals = presentedTurns.filter((turn) => turn.isFinal).slice(-120);
+              // Live "forming" line: show the most recent Speechmatics partial as it
+              // streams in word-by-word, so words appear instantly (the speaker-labeled
+              // final replaces it a moment later once diarization settles). A freshness
+              // guard hides a partial that's already been finalized.
+              const lastFinalAt = finals.length ? Number(finals[finals.length - 1].at || 0) : 0;
+              const interimTurn = isLive
+                ? [...presentedTurns].reverse().find((turn) => !turn.isFinal && (turn.text || "").trim())
+                : null;
+              const interim = interimTurn && Number(interimTurn.at || 0) >= lastFinalAt ? interimTurn : null;
               return (
-                <TranscriptStream open={transcriptOpen} itemCount={finals.length}>
-                  {finals.length === 0 ? (
+                <TranscriptStream open={transcriptOpen} itemCount={finals.length + (interim ? 1 : 0)}>
+                  {finals.length === 0 && !interim ? (
                     <p className="empty">Live transcript will appear here.</p>
                   ) : (
-                    finals.map((turn) => (
-                      <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                    ))
+                    <>
+                      {finals.map((turn) => (
+                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
+                      ))}
+                      {interim && (
+                        <p className="liveInterimLine" aria-live="polite">{interim.text}<span className="liveInterimCaret">…</span></p>
+                      )}
+                    </>
                   )}
                 </TranscriptStream>
               );

@@ -8354,6 +8354,24 @@ body::-webkit-scrollbar-track,
 .coachSkip:hover { color: var(--el-ink); }
 .coachActions .coachDone { margin-top: 0; }
 
+/* Live "forming" partial transcript line — streams word-by-word as Speechmatics
+   produces partials, before the speaker-labeled final replaces it. */
+.liveInterimLine {
+  margin: 4px 2px 2px;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--el-muted);
+  font-style: italic;
+  opacity: 0.88;
+}
+.liveInterimCaret {
+  display: inline-block;
+  margin-left: 1px;
+  animation: liveInterimBlink 1s steps(2, start) infinite;
+}
+@keyframes liveInterimBlink { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.9; } }
+
 /* ===================== Phone layout (<= 640px) =====================
    Desktop renders the shell at zoom:0.75 to densify a wide screen; on a
    phone that just makes everything tiny. Render at true scale and reflow
