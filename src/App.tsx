@@ -2721,35 +2721,30 @@ function App() {
             <StabilizerContextNotice windows={stabilizerContextWindows} />
             {(() => {
               const finals = presentedTurns.filter((turn) => turn.isFinal).slice(-120);
-              // Dedicated live caption slot (matches the test app's #partialTranscript):
-              // a single line ABOVE the turn list that shows the current Speechmatics
-              // partial streaming word-by-word, then clears when the speaker-labeled
-              // final lands in the list below. A freshness guard hides a partial that
-              // has already been finalized.
+              // Live "forming" line: show the most recent Speechmatics partial as it
+              // streams in word-by-word, so words appear instantly (the speaker-labeled
+              // final replaces it a moment later once diarization settles). A freshness
+              // guard hides a partial that's already been finalized.
               const lastFinalAt = finals.length ? Number(finals[finals.length - 1].at || 0) : 0;
               const interimTurn = isLive
                 ? [...presentedTurns].reverse().find((turn) => !turn.isFinal && (turn.text || "").trim())
                 : null;
               const interim = interimTurn && Number(interimTurn.at || 0) >= lastFinalAt ? interimTurn : null;
               return (
-                <>
-                  {isLive && (
-                    <div className="liveCaption" aria-live="polite">
-                      {interim
-                        ? <>{interim.text}<span className="liveInterimCaret">…</span></>
-                        : <span className="liveCaptionIdle">Listening…</span>}
-                    </div>
-                  )}
-                  <TranscriptStream open={transcriptOpen} itemCount={finals.length}>
-                    {finals.length === 0 ? (
-                      <p className="empty">Live transcript will appear here.</p>
-                    ) : (
-                      finals.map((turn) => (
+                <TranscriptStream open={transcriptOpen} itemCount={finals.length + (interim ? 1 : 0)}>
+                  {finals.length === 0 && !interim ? (
+                    <p className="empty">Live transcript will appear here.</p>
+                  ) : (
+                    <>
+                      {finals.map((turn) => (
                         <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                      ))
-                    )}
-                  </TranscriptStream>
-                </>
+                      ))}
+                      {interim && (
+                        <p className="liveInterimLine" aria-live="polite">{interim.text}<span className="liveInterimCaret">…</span></p>
+                      )}
+                    </>
+                  )}
+                </TranscriptStream>
               );
             })()}
           </details>

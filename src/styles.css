@@ -8354,20 +8354,17 @@ body::-webkit-scrollbar-track,
 .coachSkip:hover { color: var(--el-ink); }
 .coachActions .coachDone { margin-top: 0; }
 
-/* Dedicated live caption slot above the turn list — streams the current
-   Speechmatics partial word-by-word, then clears when the labeled final lands. */
-.liveCaption {
-  min-height: 20px;
-  margin: 2px 2px 8px;
-  padding: 9px 12px;
+/* Live "forming" partial transcript line — streams word-by-word as Speechmatics
+   produces partials, before the speaker-labeled final replaces it. */
+.liveInterimLine {
+  margin: 4px 2px 2px;
+  padding: 8px 12px;
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
+  color: var(--el-muted);
   font-style: italic;
-  color: var(--blue);
-  border-bottom: 1px solid var(--el-hairline);
+  opacity: 0.88;
 }
-html[data-theme="dark"] .liveCaption { color: #7fb2c4; }
-.liveCaptionIdle { color: var(--el-muted); font-style: italic; opacity: 0.55; }
 .liveInterimCaret {
   display: inline-block;
   margin-left: 1px;
