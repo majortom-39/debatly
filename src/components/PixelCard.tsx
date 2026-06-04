@@ -131,6 +131,7 @@ export default function PixelCard({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pixelsRef = useRef<Pixel[]>([]);
   const maxDistanceRef = useRef(1);
+  const dimsRef = useRef({ w: 1, h: 1 });
   const animationRef = useRef(0);
   const timePreviousRef = useRef(performance.now());
   const startTimeRef = useRef(performance.now());
@@ -157,16 +158,24 @@ export default function PixelCard({
   useEffect(() => {
     const initPixels = () => {
       if (!containerRef.current || !canvasRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const width = Math.max(1, Math.floor(rect.width));
-      const height = Math.max(1, Math.floor(rect.height));
+      // Use the stable LAYOUT box (clientWidth/Height), not getBoundingClientRect:
+      // the card lives inside the app's `zoom: 0.75` shell, and getBoundingClientRect
+      // returns zoom-scaled (and Chrome-version-dependent) values, which made the
+      // canvas smaller than its container on some browsers (texture looked cropped).
+      const width = Math.max(1, Math.floor(containerRef.current.clientWidth));
+      const height = Math.max(1, Math.floor(containerRef.current.clientHeight));
       const context = canvasRef.current.getContext("2d");
       if (!context) return;
 
-      canvasRef.current.width = width;
-      canvasRef.current.height = height;
-      canvasRef.current.style.width = `${width}px`;
-      canvasRef.current.style.height = `${height}px`;
+      const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      canvasRef.current.width = Math.floor(width * dpr);
+      canvasRef.current.height = Math.floor(height * dpr);
+      // Never pin a pixel size — let CSS (.pixel-canvas { width/height: 100% }) fill
+      // the container so the texture always covers its box regardless of zoom/DPR.
+      canvasRef.current.style.removeProperty("width");
+      canvasRef.current.style.removeProperty("height");
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      dimsRef.current = { w: width, h: height };
 
       const centerX = width * 0.34;
       const centerY = height * 0.52;
@@ -198,7 +207,7 @@ export default function PixelCard({
       const context = canvas?.getContext("2d");
       if (!canvas || !context) return;
 
-      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.clearRect(0, 0, dimsRef.current.w, dimsRef.current.h);
       const rawEnergy = clamp01(audioLevelRef.current / 100);
       const voicedEnergy = Math.pow(rawEnergy, 0.68);
       const targetEnergy = activeRef.current || hoverActiveRef.current ? Math.max(voicedEnergy, hoverActiveRef.current ? 0.3 : 0.055) : 0;

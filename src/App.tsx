@@ -2,6 +2,7 @@ import { AudioLines, BadgeCheck, BadgeHelp, BadgeMinus, BadgeX, Ban, BarChart3, 
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import type { ComponentType, CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import Grainient from "./components/Grainient";
 import PixelCard from "./components/PixelCard";
@@ -3706,7 +3707,10 @@ function OnboardingCoach({ importRef, recordRef, onDismiss }: {
     ? { left: cardLeft, top: rect.bottom + 16 }
     : { right: Math.max(16, vw - rect.right), top: rect.bottom + 16 };
 
-  return (
+  // Portal to <body> so the overlay sits OUTSIDE the .shell `zoom: 0.75` context.
+  // Otherwise the zoom re-scales these viewport-space coordinates (and Chrome's
+  // zoom handling differs by version), which misaligns the highlight ring.
+  return createPortal((
     <div className="coachOverlay" role="dialog" aria-label="Getting started">
       <button type="button" className="coachScrim" aria-label="Dismiss guide" onClick={onDismiss} />
       <div className="coachRing" style={ringStyle} />
@@ -3732,7 +3736,7 @@ function OnboardingCoach({ importRef, recordRef, onDismiss }: {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 // Full-screen cover shown while the PDF is being built — hides the brief desk

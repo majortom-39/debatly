@@ -43,6 +43,51 @@ export function stringifyAgentContext(value, space = 0) {
   }, space);
 }
 
+// --- Retry on transient Vertex errors (429 quota, 503, 500) ------------------
+// Vertex enforces per-project requests/tokens-per-minute quotas. Under load
+// (long debates, or several debates at once) a burst can hit 429
+// RESOURCE_EXHAUSTED. Without retry that error kills the whole packet/debate.
+// We retry with exponential backoff + jitter so transient quota spikes recover.
+const AI_MAX_RETRIES = Number(process.env.AI_MAX_RETRIES || 4);
+const AI_RETRY_BASE_MS = Number(process.env.AI_RETRY_BASE_MS || 800);
+
+function aiErrorStatus(error) {
+  const code = Number(error?.status ?? error?.code ?? error?.response?.status);
+  if (Number.isFinite(code)) return code;
+  const msg = String(error?.message || error || "");
+  const m = msg.match(/\b(429|503|500)\b/);
+  return m ? Number(m[1]) : 0;
+}
+
+function isRetryableAiError(error) {
+  const status = aiErrorStatus(error);
+  if (status === 429 || status === 503 || status === 500) return true;
+  return /RESOURCE_EXHAUSTED|UNAVAILABLE|overloaded|try again/i.test(String(error?.message || error || ""));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function generateContentWithRetry(params, { agent, trace, meta }) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= AI_MAX_RETRIES; attempt += 1) {
+    try {
+      return await genai.models.generateContent(params);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= AI_MAX_RETRIES || !isRetryableAiError(error)) throw error;
+      const delay = Math.round(AI_RETRY_BASE_MS * 2 ** attempt + Math.random() * 400);
+      logStep(trace, `${agent}:retry`, {
+        node: agent, attempt: attempt + 1, status: aiErrorStatus(error), delayMs: delay, ...meta
+      });
+      console.warn(`[ai] ${agent} ${aiErrorStatus(error) || "error"} — retry ${attempt + 1}/${AI_MAX_RETRIES} in ${delay}ms`);
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+}
+
 // --- Build the model config -------------------------------------------------
 // Gemini 3.x rejects temperature/topP/topK and uses thinkingLevel (not the old
 // 2.5-era thinkingBudget). This keeps each node's call valid.
@@ -83,11 +128,11 @@ export async function runAgent({
     ...meta
   });
 
-  const response = await genai.models.generateContent({
+  const response = await generateContentWithRetry({
     model: NODE_MODEL,
     contents: prompt,
     config: modelConfig
-  });
+  }, { agent, trace, meta });
 
   const text = response?.text || "";
   logStep(trace, `${agent}:done`, {
@@ -125,7 +170,7 @@ export async function runAgentWithTools({
     httpOptions: { timeout: timeoutMs }
   };
   logStep(trace, `${agent}:start`, { node: agent, model: NODE_MODEL, tools: tools.length, ...meta });
-  const response = await genai.models.generateContent({ model: NODE_MODEL, contents: prompt, config: cfg });
+  const response = await generateContentWithRetry({ model: NODE_MODEL, contents: prompt, config: cfg }, { agent, trace, meta });
   const text = response?.text || "";
   logStep(trace, `${agent}:done`, { node: agent, elapsedMs: Date.now() - startedAt, outputChars: text.length, ...meta });
   return { text, raw: response, json: parseJsonWithRepair(text) };
