@@ -2676,7 +2676,7 @@ function App() {
                   onClick={() => void beginLiveFromControl()}
                 >
                   {isLive ? <CircleStop size={18} /> : <Mic size={18} />}
-                  <span>{isLive ? "Stop & report" : recordingLocked ? "Recording complete" : "Start recording"}</span>
+                  <span>{isLive ? "Stop" : recordingLocked ? "Recording complete" : "Start recording"}</span>
                 </button>
                 {!isLive && (
                   <button className={`testButton ${isMicTesting ? "active" : ""}`} type="button" onClick={() => void (isMicTesting ? stopMicTest() : beginMicTest())}>
