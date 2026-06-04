@@ -3657,12 +3657,10 @@ function ImportProgress({ job, onDismiss, onCancel, onNotify, themeMode }: { job
             <span className="importCardPct">{Math.round(job.progress)}%</span>
             <div className="importCardActions">
               <button type="button" className="importCardCancel" onClick={onCancel}>Cancel</button>
-              <button type="button" className="importCardNotify" onClick={onNotify}>Notify me when it's done</button>
+              <button type="button" className="importCardNotify" onClick={onNotify}>Continue in the background</button>
             </div>
             <p className="importCardHint">
-              {job.emailConfigured === false
-                ? "We'll keep working in the background — a progress bar stays up top."
-                : "We'll keep working in the background and email you when it's ready."}
+              We'll keep working in the background — a progress bar stays up top.
             </p>
           </>
         )}
