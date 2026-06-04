@@ -1067,6 +1067,7 @@ wss.on("connection", async (ws, request) => {
   let pyannoteWindowSeq = 0;
   let pyannoteLastWindowAt = 0;
   let pyannoteCoverageEndSec = 0;
+  let workerOpenTurn = null;
   let pendingSpeechGroups = [];
   let pendingSpeechWords = [];
   let pendingSpeechWordSeq = 0;
@@ -1637,6 +1638,7 @@ wss.on("connection", async (ws, request) => {
     }
     gracefulStopTimer = setTimeout(() => {
       const finish = () => {
+        flushWorkerOpenTurn();
         sendSpeechmaticsStats("stop_timeout");
         if (ws.readyState === WebSocket.OPEN) ws.close();
       };
@@ -2377,24 +2379,47 @@ wss.on("connection", async (ws, request) => {
     return out;
   }
 
-  // Emit turns produced by the worker (already speaker-assigned + merged).
+  // Emit turns produced by the worker, coalesced into one bubble per SENTENCE
+  // (flush on sentence-ending punctuation, speaker change, or a length cap) so the
+  // UI and downstream nodes get clean sentences instead of word-by-word fragments.
   function emitWorkerTurns(turns = []) {
     for (const turn of turns) {
       const text = String(turn?.text || "").trim();
       if (!text) continue;
+      const speakerId = String(turn.speaker || "Unknown");
       const start = Number.isFinite(Number(turn.start)) ? Number(turn.start) : undefined;
       const end = Number.isFinite(Number(turn.end)) ? Number(turn.end) : undefined;
-      const speakerId = String(turn.speaker || "Unknown");
-      speechStats.pyannoteAssignedWords += Number(turn.word_count || wordCount(text));
-      sendFinalTranscriptSegment({
-        speakerId,
-        text,
-        words: [{ word: text, startSec: start, endSec: end, rawSpeaker: `pyannote:${speakerId}` }],
-        rawSpeakers: [`pyannote:${speakerId}`],
-        unassignedWords: 0,
-        speakerSource: "pyannote"
-      });
+
+      if (workerOpenTurn && workerOpenTurn.speakerId !== speakerId) flushWorkerOpenTurn();
+      if (!workerOpenTurn) {
+        workerOpenTurn = { speakerId, text: "", startSec: start, endSec: end, wordCount: 0 };
+      }
+      workerOpenTurn.text = workerOpenTurn.text ? `${workerOpenTurn.text} ${text}` : text;
+      if (workerOpenTurn.startSec === undefined) workerOpenTurn.startSec = start;
+      if (end !== undefined) workerOpenTurn.endSec = end;
+      workerOpenTurn.wordCount += Number(turn.word_count || wordCount(text));
+
+      if (/[.!?]["'”’)\]]?\s*$/.test(workerOpenTurn.text) || workerOpenTurn.wordCount >= 45) {
+        flushWorkerOpenTurn();
+      }
     }
+  }
+
+  function flushWorkerOpenTurn() {
+    if (!workerOpenTurn) return;
+    const open = workerOpenTurn;
+    workerOpenTurn = null;
+    const text = String(open.text || "").trim();
+    if (!text) return;
+    speechStats.pyannoteAssignedWords += open.wordCount;
+    sendFinalTranscriptSegment({
+      speakerId: open.speakerId,
+      text,
+      words: [{ word: text, startSec: open.startSec, endSec: open.endSec, rawSpeaker: `pyannote:${open.speakerId}` }],
+      rawSpeakers: [`pyannote:${open.speakerId}`],
+      unassignedWords: 0,
+      speakerSource: "pyannote"
+    });
   }
 
   function routeFinalToWorker(event, sessionSeq = activeSpeechSeq) {

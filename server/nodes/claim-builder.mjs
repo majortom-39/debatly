@@ -76,6 +76,7 @@ const CLAIM_BUILDER_PROMPT = [
   "",
   "WRITING THE CLAIM:",
   "- claim: one clean, standalone, factual sentence — exactly what should be checked. Preserve attribution faithfully; do not invent a source the speaker didn't name.",
+  "- NAME THE ACTOR (resolve, never invent): if the claim describes an action, the claim must name WHO performed it. Resolve pronouns ('he', 'they', 'this administration') to the specific entity the debate context ALREADY names — within this packet's dialogue, the speaker's own words, or the existing claim ledger. Resolving a pronoun to an entity already present in the conversation is REQUIRED and does NOT count as inventing a subject. Use active voice naming that actor; never fall back to passive voice ('X was done') to dodge an unresolved pronoun. ONLY if nothing in the available context names the actor, SKIP the claim rather than emit a subjectless/passive version.",
   "- quote: the EXACT line from that speaker containing the claim.",
   "- If a quote bundles a broad accusation with a factual support, output ONLY the factual support.",
   "- A packet may legitimately produce ZERO claims. Prefer zero over weak or non-checkable output.",
