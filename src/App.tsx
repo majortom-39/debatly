@@ -2742,10 +2742,8 @@ function App() {
                 }
               }
               const display = merged.slice(-120);
-              // Live partial line, pinned at the BOTTOM under the newest bubble:
-              // streams the current (not-yet-confirmed) words, cleared once its
-              // final lands and merges into the bubble above. (Test app's separate
-              // partial line, moved below for natural reading order.)
+              // Streaming words live in their OWN section under the header (below),
+              // completely outside the scroll list — so they never touch scrolling.
               const lastFinalAt = rawFinals.length ? Number(rawFinals[rawFinals.length - 1].at || 0) : 0;
               const interimTurn = isLive
                 ? [...presentedTurns].reverse().find((turn) => !turn.isFinal && (turn.text || "").trim())
@@ -2754,20 +2752,25 @@ function App() {
                 ? String(interimTurn.text || "").trim()
                 : "";
               return (
-                <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length} tailKey={interimText.length}>
-                  {display.length === 0 && !interimText ? (
-                    <p className="empty">Live transcript will appear here.</p>
-                  ) : (
-                    <>
-                      {display.map((turn) => (
-                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                      ))}
-                      {isLive && interimText && (
-                        <div className="liveCaptionBottom" aria-live="polite">{interimText}<span className="liveInterimCaret">…</span></div>
-                      )}
-                    </>
+                <>
+                  {isLive && (
+                    <div className="liveStream" aria-live="polite">
+                      <span className="liveStreamDot" aria-hidden="true" />
+                      {interimText
+                        ? <span className="liveStreamText">{interimText}</span>
+                        : <span className="liveStreamIdle">Listening…</span>}
+                    </div>
                   )}
-                </TranscriptStream>
+                  <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
+                    {display.length === 0 ? (
+                      <p className="empty">Live transcript will appear here.</p>
+                    ) : (
+                      display.map((turn) => (
+                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
+                      ))
+                    )}
+                  </TranscriptStream>
+                </>
               );
             })()}
           </details>
@@ -3332,7 +3335,7 @@ function DebateProjectCard({
 //  - releases the moment you scroll up, holding your position;
 //  - shows a "jump to latest" pill (flagged "New messages" if turns arrived while
 //    you were scrolled up) that re-sticks you to the bottom when clicked.
-function TranscriptStream({ open, itemCount, tailKey = 0, children }: { open: boolean; itemCount: number; tailKey?: number; children: ReactNode }) {
+function TranscriptStream({ open, itemCount, children }: { open: boolean; itemCount: number; children: ReactNode }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const stuckRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -3343,9 +3346,10 @@ function TranscriptStream({ open, itemCount, tailKey = 0, children }: { open: bo
     if (el) el.scrollTo({ top: el.scrollHeight, behavior });
   }, []);
 
-  // Follow the bottom on new turns AND on streaming partial growth (tailKey). The
-  // partial line lives INSIDE the scroll list, so we pin instantly ("auto") on
-  // every change — no smooth animation fighting the rapid partial updates.
+  // Standard chat scroll: on a new final turn, if the user is at the bottom, snap
+  // to the latest; if they've scrolled up, leave them and flag "new messages"
+  // (the jump button re-enables following). The streaming partial is in its own
+  // section outside this list, so it never triggers scrolling.
   useEffect(() => {
     if (!open) return;
     if (stuckRef.current) {
@@ -3356,7 +3360,7 @@ function TranscriptStream({ open, itemCount, tailKey = 0, children }: { open: bo
       setHasNew(true);
       setShowJump(true);
     }
-  }, [itemCount, tailKey, open, scrollToBottom]);
+  }, [itemCount, open, scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const el = ref.current;

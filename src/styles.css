@@ -8354,25 +8354,44 @@ body::-webkit-scrollbar-track,
 .coachSkip:hover { color: var(--el-ink); }
 .coachActions .coachDone { margin-top: 0; }
 
-/* Live partial line pinned at the BOTTOM (under the newest bubble) — streams the
-   freshest Speechmatics partial words; clears once its final merges into the
-   bubble above. */
-.liveCaptionBottom {
-  margin: 8px 2px 0;
-  padding: 8px 12px;
+/* Live streaming section — its OWN row under the transcript header, fully
+   outside the scroll list (never triggers/affected by scroll). Shows the
+   freshest Speechmatics partial words with a pulsing "live" dot. */
+.liveStream {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--el-hairline);
+  min-height: 22px;
+}
+.liveStreamDot {
+  flex: none;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--el-ink);
+  animation: liveStreamPulse 1.3s ease-in-out infinite;
+}
+@keyframes liveStreamPulse {
+  0%, 100% { opacity: 0.22; transform: scale(0.82); }
+  50% { opacity: 0.9; transform: scale(1); }
+}
+.liveStreamText {
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
   font-style: italic;
   /* Primary text color: white in dark mode, near-black in light mode. */
   color: var(--el-ink);
-  border-top: 1px solid var(--el-hairline);
 }
-.liveInterimCaret {
-  display: inline-block;
-  margin-left: 1px;
-  animation: liveInterimBlink 1s steps(2, start) infinite;
+.liveStreamIdle {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--el-muted);
+  opacity: 0.7;
 }
-@keyframes liveInterimBlink { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.9; } }
 
 /* ===================== Phone layout (<= 640px) =====================
    Desktop renders the shell at zoom:0.75 to densify a wide screen; on a
