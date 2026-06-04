@@ -44,17 +44,10 @@ export async function runReportBuilder({
   const blue = payload?.sides?.blue || {};
   const red = payload?.sides?.red || {};
 
-  // Apply live speaker-label corrections to the raw transcript so the report's
-  // "speaker enters" timeline matches the corrected labels used everywhere else.
-  const speakerCorrections = payload?.speakerCorrections || {};
-  const correctedTurns = (transcriptTurns || []).map((t) =>
-    t && speakerCorrections[t.id] ? { ...t, speakerId: speakerCorrections[t.id] } : t
-  );
-
   // --- Deterministic pieces (the truth) --------------------------------------
   const scoreTimeline = buildPivotalTimeline(payload?.scoreTimeline || [], durationMs);
   const speakers = buildSpeakerRows(payload);
-  const speakerEntries = buildSpeakerEntries(payload, correctedTurns, speakers);
+  const speakerEntries = buildSpeakerEntries(payload, transcriptTurns, speakers);
   const factChecks = buildFactCheckRoundup(payload);
   const contradictions = buildContradictions(payload);
   const scoreboard = {
