@@ -44,3 +44,5 @@ _e2e.mjs
 
 # local-only reference docs (not for repo)
 docs/speechmatics-realtime.md
+ARCHITECTURE.md
+DESIGN.md

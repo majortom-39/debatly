@@ -40,36 +40,47 @@
   - **Claims & fact-checks** with a verdict (Verified / False / Misleading / Unverified), a one-line reason, and real sources.
   - **Self-contradictions & double standards** caught across the debate.
 - **⚖️ Credibility score** — A deterministic score that rewards verified claims and penalizes false/misleading ones and self-contradictions, so volume never beats accuracy. It measures honesty, **not** who talked more or whose opinion you like.
-- **📊 Post-debate report** — A clean write-up rendered above the transcript:
+- **📊 Post-debate report** — Generated when the debate ends:
   - A plain-English verdict (**no winner is declared** — you decide).
   - A **score-over-time chart** with markers for when each speaker entered.
   - A **per-speaker breakdown** with stats, a judging note, and a standout quote.
   - Side summaries, turning points (with gained/lost-ground impact), and the scoring methodology.
-- **📄 Native PDF export** — Download the whole report as a proper, text-based PDF with vector charts (selectable text, small file, nothing clipped) — not a screenshot.
+- **📄 Native PDF export** — Download the whole report as a text-based PDF with vector charts.
 - **🔁 Long, uninterrupted sessions** — Built to run for hours without dropping the connection.
-- **✉️ Email when ready** — Long imports can run in the background and email you when the report is done.
 
 ---
 
 ## 🛠️ How it works
 
-```
-Browser (mic / upload / URL)
-        │  PCM audio over WebSocket  /  file or link
-        ▼
-Node + Express + ws  ──►  Speechmatics (live STT)   /   pyannote.ai (batch diarize + transcribe)
-        │
-        ▼
-Clean node pipeline
-  ├─ Claim Builder         → finds checkable claims (ignores personal anecdotes)
-  ├─ Fact Checker          → Firecrawl search → Gemini writes the verdict from real sources
-  ├─ Debate-Point Builder  → groups arguments into themed families
-  ├─ Inconsistency Watch   → flags self-contradictions & double standards
-  ├─ Side Builder          → assigns speakers to sides
-  └─ Scoring Engine        → deterministic credibility score per side
-        │
-        ▼
-Supabase (Postgres)  ◄─►  Live Debate Desk + Post-debate Report (React)
+```mermaid
+flowchart TD
+    U["🎙️ Browser<br/>live mic · file upload · video URL"]
+    API["⚙️ Node · Express · ws"]
+    SM["Speechmatics<br/>realtime STT — live"]
+    PY["pyannote.ai<br/>batch diarize + transcribe — upload / URL"]
+    DB[("🗄️ Supabase · Postgres")]
+    UI["🖥️ Live Debate Desk<br/>+ Post-debate Report"]
+
+    U -->|"audio over WebSocket · file · link"| API
+    API -->|live| SM
+    API -->|"upload / URL"| PY
+    SM --> P
+    PY --> P
+
+    subgraph P["🧠 Clean node pipeline"]
+        direction TB
+        SB["Side Builder<br/>assigns speakers to sides"]
+        DP["Debate-Point Builder<br/>groups arguments into themes"]
+        CB["Claim Builder<br/>extracts checkable claims"]
+        FC["Fact Checker<br/>Firecrawl search, Gemini verdict"]
+        IW["Inconsistency Watch<br/>self-contradictions, double standards"]
+        SE["Scoring Engine<br/>deterministic credibility score"]
+        SB --> DP --> CB --> FC --> IW --> SE
+    end
+
+    P --> DB
+    P --> UI
+    DB <--> UI
 ```
 
 ---
@@ -85,7 +96,6 @@ Supabase (Postgres)  ◄─►  Live Debate Desk + Post-debate Report (React)
 | **Reasoning & fact-checks** | Google Vertex AI (Gemini) + Firecrawl web search |
 | **Audio / media** | `ffmpeg-static`, `youtube-dl-exec` |
 | **Data & auth** | Supabase (Postgres + authentication) |
-| **Email** | Resend |
 | **Hosting** | GCP Compute Engine VM + Caddy (automatic HTTPS) |
 
 ---
@@ -94,7 +104,7 @@ Supabase (Postgres)  ◄─►  Live Debate Desk + Post-debate Report (React)
 
 ### Prerequisites
 - **Node.js 20+**
-- Accounts/keys for the services you want to use (Vertex AI / Gemini, Speechmatics, Firecrawl, Supabase, pyannote.ai, Resend). See **`.env.example`** for the full list.
+- Accounts/keys for the services you want to use (Vertex AI / Gemini, Speechmatics, Firecrawl, Supabase, pyannote.ai). See **`.env.example`** for the full list.
 
 ### 1. Install
 ```bash
@@ -135,7 +145,7 @@ Then open **http://127.0.0.1:5173** (the API runs on `127.0.0.1:8787`).
 │   ├── index.mjs       # HTTP/WS entry point
 │   ├── pipeline.mjs    # live analysis pipeline
 │   ├── nodes/          # claim builder, fact-checker, scoring engine, report builder, …
-│   └── shared/         # STT, audio extraction, email, db helpers
+│   └── shared/         # STT, audio extraction, db helpers
 ├── public/           # static assets (logos, favicons)
 ├── supabase/         # database migrations
 ├── docs/             # README media
@@ -150,10 +160,18 @@ Debatly runs on a **GCP Compute Engine VM** with **Caddy** as a reverse proxy th
 
 ---
 
+## ⚠️ Known limitations
+
+- **Live diarization isn't accurate yet.** Live capture uses Speechmatics realtime STT, and on a single shared mic with several speakers (e.g. a one‑vs‑many debate) it frequently merges or swaps speakers. Live transcription is reliable; live *speaker attribution* is best-effort.
+- **For accurate speakers, use Upload / paste a link.** The import path runs **batch diarization + transcription via pyannote.ai**, which is **ultra-accurate** at separating speakers — far better than the live path. If speaker accuracy matters, import a recording rather than capturing live.
+- **No good live pyannote (yet).** pyannote's *streaming* diarization is still in beta and not yet reliable, which is why live uses Speechmatics; pyannote is used only for the (non-live) batch path.
+- **Audio quality matters.** Close mic placement, low background noise, and minimal reverb noticeably improve live results.
+
+---
+
 ## 🔒 A note on privacy & keys
 
 - All API keys live in `.env` and stay server-side. The browser never receives Google, Speechmatics, Firecrawl, or database credentials.
-- Real-time transcription quality depends on microphone placement, background noise, and how much speakers talk over each other.
 
 ---
 
