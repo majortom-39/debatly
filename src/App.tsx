@@ -2754,20 +2754,20 @@ function App() {
                 ? String(interimTurn.text || "").trim()
                 : "";
               return (
-                <>
-                  <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
-                    {display.length === 0 && !interimText ? (
-                      <p className="empty">Live transcript will appear here.</p>
-                    ) : (
-                      display.map((turn) => (
+                <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length} tailKey={interimText.length}>
+                  {display.length === 0 && !interimText ? (
+                    <p className="empty">Live transcript will appear here.</p>
+                  ) : (
+                    <>
+                      {display.map((turn) => (
                         <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                      ))
-                    )}
-                  </TranscriptStream>
-                  {isLive && interimText && (
-                    <div className="liveCaptionBottom" aria-live="polite">{interimText}<span className="liveInterimCaret">…</span></div>
+                      ))}
+                      {isLive && interimText && (
+                        <div className="liveCaptionBottom" aria-live="polite">{interimText}<span className="liveInterimCaret">…</span></div>
+                      )}
+                    </>
                   )}
-                </>
+                </TranscriptStream>
               );
             })()}
           </details>
@@ -3332,10 +3332,9 @@ function DebateProjectCard({
 //  - releases the moment you scroll up, holding your position;
 //  - shows a "jump to latest" pill (flagged "New messages" if turns arrived while
 //    you were scrolled up) that re-sticks you to the bottom when clicked.
-function TranscriptStream({ open, itemCount, children }: { open: boolean; itemCount: number; children: ReactNode }) {
+function TranscriptStream({ open, itemCount, tailKey = 0, children }: { open: boolean; itemCount: number; tailKey?: number; children: ReactNode }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const stuckRef = useRef(true);
-  const firstRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
   const [hasNew, setHasNew] = useState(false);
 
@@ -3344,19 +3343,20 @@ function TranscriptStream({ open, itemCount, children }: { open: boolean; itemCo
     if (el) el.scrollTo({ top: el.scrollHeight, behavior });
   }, []);
 
-  // New turns (or reopening the panel): follow the bottom if stuck, else flag them.
+  // Follow the bottom on new turns AND on streaming partial growth (tailKey). The
+  // partial line lives INSIDE the scroll list, so we pin instantly ("auto") on
+  // every change — no smooth animation fighting the rapid partial updates.
   useEffect(() => {
     if (!open) return;
     if (stuckRef.current) {
-      scrollToBottom(firstRef.current ? "auto" : "smooth");
+      scrollToBottom("auto");
       setShowJump(false);
       setHasNew(false);
     } else {
       setHasNew(true);
       setShowJump(true);
     }
-    firstRef.current = false;
-  }, [itemCount, open, scrollToBottom]);
+  }, [itemCount, tailKey, open, scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const el = ref.current;
