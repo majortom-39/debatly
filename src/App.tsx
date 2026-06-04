@@ -102,7 +102,6 @@ export interface LiveAnalysis {
   topic: string; gateOpen: boolean;
   sides: { blue: LiveSide; red: LiveSide };
   speakers: Record<string, { side: string }>;
-  speakerCorrections?: Record<string, string>; // turnId -> corrected speaker label
   counts: { debatePoints: number; claims: number; inconsistencies: number };
 }
 
@@ -2726,20 +2725,9 @@ function App() {
                   {finals.length === 0 ? (
                     <p className="empty">Live transcript will appear here.</p>
                   ) : (
-                    finals.map((turn) => {
-                      const correctedId = liveAnalysis?.speakerCorrections?.[turn.id];
-                      const useCorrection = Boolean(correctedId && correctedId !== turn.speakerId);
-                      const effectiveTurn = useCorrection ? { ...turn, speakerId: correctedId as string } : turn;
-                      return (
-                        <TurnBubble
-                          key={turn.id}
-                          turn={turn}
-                          sideColor={transcriptDotColor(liveAnalysis, sideViews, effectiveTurn)}
-                          speakerLabel={speakerLabel(effectiveTurn.speakerId)}
-                          originalLabel={useCorrection ? speakerLabel(turn.speakerId) : undefined}
-                        />
-                      );
-                    })
+                    finals.map((turn) => (
+                      <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
+                    ))
                   )}
                 </TranscriptStream>
               );
@@ -3364,16 +3352,13 @@ function TranscriptStream({ open, itemCount, children }: { open: boolean; itemCo
   );
 }
 
-function TurnBubble({ turn, sideColor, speakerLabel, originalLabel }: { turn: TranscriptTurn; sideColor?: "blue" | "red"; speakerLabel: string; originalLabel?: string }) {
-  // Show the clean speaker label. If diarization was corrected for this turn,
-  // show the original (struck) then the corrected label.
+function TurnBubble({ turn, sideColor, speakerLabel }: { turn: TranscriptTurn; sideColor?: "blue" | "red"; speakerLabel: string }) {
+  // Show just the clean speaker label (e.g. "Speaker 2"), no raw "(S2)" suffix.
+  const displaySpeaker = speakerLabel;
   return (
     <article className={`turn ${sideColor ? `side-${sideColor}` : ""} ${turn.contextOnly ? "context-turn" : ""} ${turn.isFinal ? "" : "interim"}`}>
       <header>
-        <span className="turnSpeaker">
-          {originalLabel && <s className="turnSpeakerOriginal">{originalLabel}</s>}
-          {speakerLabel}
-        </span>
+        <span className="turnSpeaker">{displaySpeaker}</span>
         {turn.contextOnly && <small>{formatContextLabel(turn.contextKind)}</small>}
       </header>
       <p>{turn.text}</p>
