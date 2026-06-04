@@ -2741,30 +2741,39 @@ function App() {
                 }
               }
               const display = merged.slice(-120);
-              // Live caption above the list: the freshest partial words streaming in,
-              // hidden once its speaker-labeled final has landed.
+              // The freshest partial words append onto the CURRENT speaker's bubble
+              // as a faint tail (no separate caption line); they solidify when the
+              // piece finalizes. Freshness guard hides a partial already finalized.
               const lastFinalAt = rawFinals.length ? Number(rawFinals[rawFinals.length - 1].at || 0) : 0;
               const interimTurn = isLive
                 ? [...presentedTurns].reverse().find((turn) => !turn.isFinal && (turn.text || "").trim())
                 : null;
-              const interim = interimTurn && Number(interimTurn.at || 0) >= lastFinalAt ? interimTurn : null;
+              const interimText = interimTurn && Number(interimTurn.at || 0) >= lastFinalAt
+                ? String(interimTurn.text || "").trim()
+                : "";
               return (
-                <>
-                  {isLive && (
-                    <div className="liveCaption" aria-live="polite">
-                      {interim ? <>{interim.text}<span className="liveInterimCaret">…</span></> : null}
-                    </div>
+                <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
+                  {display.length === 0 && !interimText ? (
+                    <p className="empty">Live transcript will appear here.</p>
+                  ) : (
+                    <>
+                      {display.map((turn, idx) => (
+                        <TurnBubble
+                          key={turn.id}
+                          turn={turn}
+                          sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)}
+                          speakerLabel={speakerLabel(turn.speakerId)}
+                          pendingTail={idx === display.length - 1 ? interimText : ""}
+                        />
+                      ))}
+                      {display.length === 0 && interimText && (
+                        <article className="turn interim">
+                          <p>{interimText}<span className="liveInterimCaret">…</span></p>
+                        </article>
+                      )}
+                    </>
                   )}
-                  <TranscriptStream open={transcriptOpen} itemCount={rawFinals.length}>
-                    {display.length === 0 ? (
-                      <p className="empty">Live transcript will appear here.</p>
-                    ) : (
-                      display.map((turn) => (
-                        <TurnBubble key={turn.id} turn={turn} sideColor={transcriptDotColor(liveAnalysis, sideViews, turn)} speakerLabel={speakerLabel(turn.speakerId)} />
-                      ))
-                    )}
-                  </TranscriptStream>
-                </>
+                </TranscriptStream>
               );
             })()}
           </details>
@@ -3387,7 +3396,7 @@ function TranscriptStream({ open, itemCount, children }: { open: boolean; itemCo
   );
 }
 
-function TurnBubble({ turn, sideColor, speakerLabel }: { turn: TranscriptTurn; sideColor?: "blue" | "red"; speakerLabel: string }) {
+function TurnBubble({ turn, sideColor, speakerLabel, pendingTail = "" }: { turn: TranscriptTurn; sideColor?: "blue" | "red"; speakerLabel: string; pendingTail?: string }) {
   // Show just the clean speaker label (e.g. "Speaker 2"), no raw "(S2)" suffix.
   const displaySpeaker = speakerLabel;
   return (
@@ -3396,7 +3405,7 @@ function TurnBubble({ turn, sideColor, speakerLabel }: { turn: TranscriptTurn; s
         <span className="turnSpeaker">{displaySpeaker}</span>
         {turn.contextOnly && <small>{formatContextLabel(turn.contextKind)}</small>}
       </header>
-      <p>{turn.text}</p>
+      <p>{turn.text}{pendingTail ? <span className="turnPendingTail"> {pendingTail}<span className="liveInterimCaret">…</span></span> : null}</p>
     </article>
   );
 }
