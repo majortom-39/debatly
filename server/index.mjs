@@ -1636,9 +1636,19 @@ wss.on("connection", async (ws, request) => {
       sendSpeechEndOfStream(speechWs);
     }
     gracefulStopTimer = setTimeout(() => {
-      flushPendingSpeechGroups(true, "stop_timeout");
-      sendSpeechmaticsStats("stop_timeout");
-      if (ws.readyState === WebSocket.OPEN) ws.close();
+      const finish = () => {
+        sendSpeechmaticsStats("stop_timeout");
+        if (ws.readyState === WebSocket.OPEN) ws.close();
+      };
+      if (usePyannoteLiveDiarization && pyannoteNode) {
+        pyannoteNode.flushTurns(true)
+          .then((res) => emitWorkerTurns(res?.turns || []))
+          .catch(() => { /* worker gone; nothing to flush */ })
+          .finally(finish);
+      } else {
+        flushPendingSpeechGroups(true, "stop_timeout");
+        finish();
+      }
     }, 2500);
   }
 
@@ -1813,7 +1823,10 @@ wss.on("connection", async (ws, request) => {
       sampleRate: config.speechmaticsSampleRate || config.pyannoteSampleRate || 16000,
       windowStartSec
     }).then((result) => {
-      handlePyannoteWindowResult(result, { seq, windowStartSec, windowEndSec });
+      pyannoteCoverageEndSec = Math.max(pyannoteCoverageEndSec, Number(result?.coverageEndSec || 0));
+      speechStats.pyannoteWindowsCompleted += 1;
+      // Worker owns assignment now: emit any turns it flushed as coverage advanced.
+      emitWorkerTurns(result?.turns || []);
     }).catch((error) => {
       speechStats.pyannoteWindowErrors += 1;
       const message = error instanceof Error ? error.message : "pyannote live diarization failed";
@@ -1821,7 +1834,6 @@ wss.on("connection", async (ws, request) => {
       logLiveEvent("pyannote_window_error", { seq, message });
     }).finally(() => {
       pyannoteRunning = false;
-      flushPendingSpeechGroups(false, "pyannote_result");
       if (!closing && !gracefulStopRequested) maybeSchedulePyannoteWindow(false);
     });
   }
@@ -2330,7 +2342,81 @@ wss.on("connection", async (ws, request) => {
     }
   }
 
+  // Dispatch: when local pyannote diarization is active, the Python worker owns
+  // word->speaker assignment + turn merging (faithful Utterr). Only fall back to
+  // the legacy Speechmatics packaging if the worker process is gone/failing.
   function queueSpeechmaticsFinal(event, sessionSeq = activeSpeechSeq) {
+    if (usePyannoteLiveDiarization && pyannoteNode) {
+      routeFinalToWorker(event, sessionSeq);
+      return;
+    }
+    queueSpeechmaticsFinalLegacy(event, sessionSeq);
+  }
+
+  // Convert a Speechmatics final event into worker words (absolute audio clock).
+  function extractWordsForWorker(event) {
+    const offset = Number(activeSpeechTimestampOffsetSec) || 0;
+    const results = Array.isArray(event.results)
+      ? event.results
+      : (Array.isArray(event.words) ? event.words : []);
+    const out = [];
+    for (const item of results) {
+      const alternative = item.alternatives?.[0] || item;
+      const text = String(alternative.content ?? item.text ?? item.word ?? "").trim();
+      if (!text) continue;
+      const type = item.type === "punctuation" ? "punctuation" : "word";
+      const rawStart = Number(item.start_time ?? item.start);
+      const rawEnd = Number(item.end_time ?? item.end);
+      out.push({
+        text,
+        type,
+        start: Number.isFinite(rawStart) ? rawStart + offset : null,
+        end: Number.isFinite(rawEnd) ? rawEnd + offset : null
+      });
+    }
+    return out;
+  }
+
+  // Emit turns produced by the worker (already speaker-assigned + merged).
+  function emitWorkerTurns(turns = []) {
+    for (const turn of turns) {
+      const text = String(turn?.text || "").trim();
+      if (!text) continue;
+      const start = Number.isFinite(Number(turn.start)) ? Number(turn.start) : undefined;
+      const end = Number.isFinite(Number(turn.end)) ? Number(turn.end) : undefined;
+      const speakerId = String(turn.speaker || "Unknown");
+      speechStats.pyannoteAssignedWords += Number(turn.word_count || wordCount(text));
+      sendFinalTranscriptSegment({
+        speakerId,
+        text,
+        words: [{ word: text, startSec: start, endSec: end, rawSpeaker: `pyannote:${speakerId}` }],
+        rawSpeakers: [`pyannote:${speakerId}`],
+        unassignedWords: 0,
+        speakerSource: "pyannote"
+      });
+    }
+  }
+
+  function routeFinalToWorker(event, sessionSeq = activeSpeechSeq) {
+    mergeSpeechmaticsEventStats(speechStats, speechmaticsEventStats(event));
+    const words = extractWordsForWorker(event);
+    if (!words.length) return;
+    const node = pyannoteNode;
+    if (!node) {
+      queueSpeechmaticsFinalLegacy(event, sessionSeq);
+      return;
+    }
+    node.addWords(words).then((res) => {
+      emitWorkerTurns(res?.turns || []);
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[pyannote live] addWords failed; Speechmatics fallback for this event: ${message}`);
+      logLiveEvent("pyannote_addwords_failed", { message, sessionSeq });
+      queueSpeechmaticsFinalLegacy(event, sessionSeq);
+    });
+  }
+
+  function queueSpeechmaticsFinalLegacy(event, sessionSeq = activeSpeechSeq) {
     const eventStats = speechmaticsEventStats(event);
     mergeSpeechmaticsEventStats(speechStats, eventStats);
     const segments = splitSpeechmaticsTranscriptBySpeaker(event, speakerMap, sessionSeq);

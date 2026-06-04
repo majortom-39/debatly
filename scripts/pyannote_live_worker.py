@@ -75,6 +75,34 @@ VAD_THRESHOLD = env_float("DIA_VAD_THRESHOLD", 0.5)
 NEW_SPEAKER_RECHECK_THRESHOLD = env_float("DIA_NEW_SPEAKER_RECHECK_THRESHOLD", 0.55)
 # How much recent audio to keep buffered for windowing (profiles persist beyond this).
 KEEP_SECONDS = env_float("DIA_KEEP_SECONDS", 45.0)
+# Word -> speaker assignment / turn building (Utterr's live settings).
+LABEL_DELAY_SECONDS = env_float("DIA_LABEL_DELAY_SECONDS", 2.0)
+WORD_TURN_MERGE_GAP_SECONDS = env_float("DIA_WORD_TURN_MERGE_GAP_SECONDS", 0.8)
+TRANSCRIPT_MIN_PROFILE_WINDOWS = env_int("DIA_TRANSCRIPT_MIN_PROFILE_WINDOWS", 3)
+MAX_FLUSH_WAIT_SECONDS = env_float("DIA_MAX_FLUSH_WAIT_SECONDS", 8.0)
+PUNCTUATION_ATTACH = {".", ",", "?", "!", ":", ";", "%", ")", "]", "}"}
+
+
+def append_word_token(text: str, token: str, result_type: str) -> str:
+    token = token.strip()
+    if not token:
+        return text
+    if not text:
+        return token
+    if result_type == "punctuation" or token in PUNCTUATION_ATTACH:
+        return f"{text}{token}"
+    if text.endswith(("(", "[", "{", "$", "#")):
+        return f"{text}{token}"
+    return f"{text} {token}"
+
+
+def word_gap(previous_end, start) -> float:
+    if previous_end is None or start is None:
+        return 0.0
+    try:
+        return float(start) - float(previous_end)
+    except (TypeError, ValueError):
+        return 0.0
 
 DEFAULT_EMBED_MODEL = os.getenv("PYANNOTE_EMBED_MODEL", "pyannote/wespeaker-voxceleb-resnet34-LM")
 
@@ -223,6 +251,10 @@ class StreamingSession:
         self.pending: list[PendingWindow] = []
         # timeline: list of (start_abs, end_abs, label) for assigned speech windows
         self.timeline: list[tuple[float, float, str]] = []
+        self.coverage_end_abs = 0.0   # how far diarization has looked (absolute sec)
+        self.last_speaker = "Unknown"
+        # buffered Speechmatics word batches awaiting label-delay flush
+        self.pending_chunks: list[dict] = []
 
     @property
     def buffer_end_abs(self) -> float:
@@ -284,6 +316,7 @@ class StreamingSession:
             window = self.buffer[local_start:local_end]
             if window.shape[0] >= int(WINDOW_SECONDS * SAMPLE_RATE * 0.8):
                 self._process_window(window, start_abs, end_abs)
+            self.coverage_end_abs = max(self.coverage_end_abs, end_abs)
             self.cursor_abs += STEP_SECONDS
 
     def _process_window(self, audio: np.ndarray, start: float, end: float) -> None:
@@ -295,6 +328,7 @@ class StreamingSession:
         label = self._assign(start, end, embedding)
         if label not in {"Pending", "Silence"}:
             self.timeline.append((start, end, label))
+            self.last_speaker = label
         self._promote_pending()
 
     def _assign(self, start: float, end: float, embedding: np.ndarray) -> str:
@@ -362,6 +396,7 @@ class StreamingSession:
 
         keep = set(cluster_indices)
         self.pending = [item for i, item in enumerate(self.pending) if i not in keep]
+        self.last_speaker = profile.label
         for item in promoted:
             self.timeline.append((item.start, item.end, profile.label))
 
@@ -393,6 +428,141 @@ class StreamingSession:
     def speaker_summary(self) -> dict:
         by_speaker = {p.label: {"windows": len(p.embeddings)} for p in self.profiles}
         return {"speakerCount": len(self.profiles), "bySpeaker": by_speaker}
+
+    # --- Utterr word -> speaker assignment (always picks a diarized speaker) ----
+    def _stable_speakers(self) -> set:
+        return {p.label for p in self.profiles if len(p.embeddings) >= TRANSCRIPT_MIN_PROFILE_WINDOWS}
+
+    def _speaker_candidates(self) -> list[tuple[float, float, str]]:
+        return [(s, e, l) for (s, e, l) in self.timeline if l not in {"Silence", "Pending"}]
+
+    def _dominant_speaker(self, start: float, end: float, candidates) -> str | None:
+        if end <= start:
+            return None
+        totals: dict[str, float] = {}
+        for seg_start, seg_end, label in candidates:
+            overlap = max(0.0, min(end, seg_end) - max(start, seg_start))
+            if overlap > 0.0:
+                totals[label] = totals.get(label, 0.0) + overlap
+        if not totals:
+            return None
+        return max(totals.items(), key=lambda kv: kv[1])[0]
+
+    def speaker_at(self, start, end) -> str:
+        if start is None and end is None:
+            return self.last_speaker
+        if start is None:
+            midpoint = float(end)
+        elif end is None:
+            midpoint = float(start)
+        else:
+            midpoint = (float(start) + float(end)) / 2.0
+
+        all_candidates = self._speaker_candidates()
+        if not all_candidates:
+            return self.last_speaker
+        stable = self._stable_speakers()
+        stable_candidates = [c for c in all_candidates if c[2] in stable]
+        candidates = stable_candidates or all_candidates
+
+        if start is not None and end is not None:
+            dominant = self._dominant_speaker(float(start), float(end), candidates)
+            if dominant is not None:
+                return dominant
+
+        covering = [c for c in candidates if c[0] <= midpoint <= c[1]]
+        if covering:
+            return covering[-1][2]
+
+        nearest = min(candidates, key=lambda c: min(abs(midpoint - c[0]), abs(midpoint - c[1])))
+        return nearest[2]
+
+    def build_turns(self, words: list[dict]) -> list[dict]:
+        """Assign each Speechmatics word to a diarized speaker and merge into turns."""
+        starts = [w["start"] for w in words if w.get("start") is not None]
+        ends = [w["end"] for w in words if w.get("end") is not None]
+        chunk_speaker = self.speaker_at(min(starts) if starts else None, max(ends) if ends else None)
+
+        turns: list[dict] = []
+        current: dict | None = None
+        previous_word_speaker: str | None = None
+
+        def close_current() -> None:
+            nonlocal current
+            if current is not None and str(current.get("text") or "").strip():
+                turns.append(current)
+            current = None
+
+        for word in words:
+            result_type = word.get("type") or "word"
+            if result_type == "punctuation" and current is not None:
+                speaker = str(current.get("speaker") or previous_word_speaker or chunk_speaker or "Unknown")
+            else:
+                speaker = self.speaker_at(word.get("start"), word.get("end"))
+                if speaker in {"Silence", "Pending"} or not speaker:
+                    speaker = previous_word_speaker or chunk_speaker or "Unknown"
+
+            token = str(word.get("text") or "").strip()
+            if not token:
+                continue
+
+            if result_type == "punctuation" and current is not None:
+                current["text"] = append_word_token(str(current.get("text") or ""), token, result_type)
+                if word.get("end") is not None:
+                    current["end"] = word.get("end")
+                continue
+
+            gap = word_gap(current.get("end") if current else None, word.get("start"))
+            if current is not None and current.get("speaker") == speaker and gap <= WORD_TURN_MERGE_GAP_SECONDS:
+                current["text"] = append_word_token(str(current.get("text") or ""), token, result_type)
+                if word.get("end") is not None:
+                    current["end"] = word.get("end")
+                current["word_count"] = int(current.get("word_count") or 0) + 1
+            else:
+                close_current()
+                current = {
+                    "speaker": speaker,
+                    "start": word.get("start"),
+                    "end": word.get("end"),
+                    "text": token,
+                    "word_count": 1,
+                }
+
+            if result_type != "punctuation":
+                previous_word_speaker = speaker
+
+        close_current()
+        for turn in turns:
+            turn["start"] = round(float(turn["start"]), 3) if turn.get("start") is not None else None
+            turn["end"] = round(float(turn["end"]), 3) if turn.get("end") is not None else None
+        return turns
+
+    def queue_words(self, words: list[dict]) -> None:
+        clean = [w for w in words if str(w.get("text") or "").strip()]
+        if not clean:
+            return
+        ends = [w["end"] for w in clean if w.get("end") is not None]
+        starts = [w["start"] for w in clean if w.get("start") is not None]
+        marker = max(ends) if ends else (max(starts) if starts else None)
+        self.pending_chunks.append({"words": clean, "marker": marker, "queued_at": time.time()})
+
+    def flush_turns(self, force: bool = False) -> list[dict]:
+        ready: list[dict] = []
+        keep: list[dict] = []
+        now = time.time()
+        for chunk in self.pending_chunks:
+            marker = chunk.get("marker")
+            diarization_ready = marker is None or self.coverage_end_abs >= float(marker) + LABEL_DELAY_SECONDS
+            waited_too_long = now - float(chunk.get("queued_at", now)) >= MAX_FLUSH_WAIT_SECONDS
+            if force or diarization_ready or waited_too_long:
+                ready.append(chunk)
+            else:
+                keep.append(chunk)
+        self.pending_chunks = keep
+        out: list[dict] = []
+        for chunk in ready:
+            out.extend(self.build_turns(chunk["words"]))
+        return out
 
 
 def main() -> int:
@@ -430,6 +600,15 @@ def main() -> int:
                 session = StreamingSession(engine)
                 write_message({"id": request_id, "type": "reset_done"})
                 continue
+            if kind == "add_words":
+                session.queue_words(list(request.get("words") or []))
+                turns = session.flush_turns(force=False)
+                write_message({"id": request_id, "type": "turns", "turns": turns, "coverageEndSec": round(session.coverage_end_abs, 3)})
+                continue
+            if kind == "flush":
+                turns = session.flush_turns(force=bool(request.get("force")))
+                write_message({"id": request_id, "type": "turns", "turns": turns, "coverageEndSec": round(session.coverage_end_abs, 3)})
+                continue
             if kind != "diarize_pcm16":
                 write_message({"id": request_id, "type": "error", "message": "Unknown request type."})
                 continue
@@ -446,10 +625,14 @@ def main() -> int:
                 session.ingest(samples, window_start_sec, window_end_sec)
                 session.process()
 
+            # Coverage advanced -> flush any word batches that are now diarization-ready.
+            turns = session.flush_turns(force=False)
             segments = session.segments_in(window_start_sec, window_end_sec)
             write_message({
                 "id": request_id,
                 "type": "result",
+                "turns": turns,
+                "coverageEndSec": round(session.coverage_end_abs, 3),
                 "provider": "utterr",
                 "engine": "utterr-online-clustering",
                 "device": str(engine.device),
