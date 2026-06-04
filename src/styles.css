@@ -8354,9 +8354,19 @@ body::-webkit-scrollbar-track,
 .coachSkip:hover { color: var(--el-ink); }
 .coachActions .coachDone { margin-top: 0; }
 
-/* Faint "still forming" tail appended to the current speaker's bubble — the live
-   partial words, before the piece finalizes into the bubble text. */
-.turnPendingTail { color: var(--el-muted); opacity: 0.65; font-style: italic; }
+/* Live caption above the turn list — streams the freshest Speechmatics partial
+   words; clears once the speaker-labeled final lands in the list below. */
+.liveCaption {
+  min-height: 20px;
+  margin: 0 2px 8px;
+  padding: 7px 12px;
+  font-size: 14px;
+  line-height: 1.45;
+  font-style: italic;
+  color: var(--blue);
+  border-bottom: 1px solid var(--el-hairline);
+}
+html[data-theme="dark"] .liveCaption { color: #7fb2c4; }
 .liveInterimCaret {
   display: inline-block;
   margin-left: 1px;
