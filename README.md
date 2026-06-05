@@ -53,39 +53,59 @@
 ## 🛠️ How it works
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif","fontSize":"14px","lineColor":"#8a847c","clusterBkg":"#0c0a09","clusterBorder":"#2b2724"}}}%%
 flowchart TD
-    U["🎙️ Browser<br/>live mic · file upload · video URL"]
-    API["⚙️ Node · Express · ws"]
-    SM["Speechmatics<br/>realtime words (STT) — live"]
-    LD["Local diarizer (Python)<br/>Silero VAD + pyannote/wespeaker<br/>online speaker clustering — live"]
-    MERGE["Word → speaker merge<br/>persistent labels"]
-    PY["pyannote.ai<br/>batch diarize + transcribe — upload / URL"]
-    DB[("🗄️ Supabase · Postgres")]
-    UI["🖥️ Live Debate Desk<br/>+ Post-debate Report"]
+    U(["🎙️ Browser — live mic · file · video URL"])
+    API["⚙️ Node · Express · WebSocket"]
+    U == "audio · file · link" ==> API
 
-    U -->|"audio over WebSocket · file · link"| API
-    API -->|live audio| SM
-    API -->|live audio| LD
-    SM --> MERGE
-    LD --> MERGE
-    MERGE --> P
-    API -->|"upload / URL"| PY
-    PY --> P
-
-    subgraph P["🧠 Clean node pipeline"]
-        direction TB
-        SB["Side Builder<br/>assigns speakers to sides"]
-        DP["Debate-Point Builder<br/>groups arguments into themes"]
-        CB["Claim Builder<br/>extracts checkable claims"]
-        FC["Fact Checker<br/>Firecrawl search, Gemini verdict"]
-        IW["Inconsistency Watch<br/>self-contradictions, double standards"]
-        SE["Scoring Engine<br/>deterministic credibility score"]
-        SB --> DP --> CB --> FC --> IW --> SE
+    subgraph LIVE["⚡ Live"]
+      direction LR
+      SM["Speechmatics<br/>realtime words · STT"]
+      LD["Local diarizer · Python<br/>Silero VAD + pyannote/wespeaker<br/>online speaker clustering"]
     end
 
-    P --> DB
-    P --> UI
+    MERGE{{"Word → speaker merge<br/>persistent labels"}}
+
+    subgraph BATCH["📦 Upload / URL"]
+      PY["pyannote.ai<br/>precision-2 diarize + Whisper"]
+    end
+
+    API -- "live audio" --> SM
+    API -- "live audio" --> LD
+    API -- "upload / URL" --> PY
+    SM --> MERGE
+    LD --> MERGE
+
+    subgraph PIPE["🧠 Analysis pipeline"]
+      direction TB
+      SB["Side Builder"] --> DP["Debate-Point Builder"] --> CB["Claim Builder"] --> FC["Fact Checker · Firecrawl + Gemini"] --> IW["Inconsistency Watch"] --> SE["Scoring Engine"]
+    end
+
+    MERGE ==> SB
+    PY ==> SB
+
+    DB[("🗄️ Supabase · Postgres")]
+    UI["🖥️ Debate Desk + Report"]
+    SE ==> DB
+    SE ==> UI
     DB <--> UI
+
+    classDef input fill:#0c0a09,stroke:#5b8aa0,stroke-width:1.5px,color:#f5f5f4
+    classDef core fill:#1c1917,stroke:#a8a29e,stroke-width:1.5px,color:#f5f5f4
+    classDef live fill:#13212b,stroke:#5b8aa0,stroke-width:1.4px,color:#e8eef2
+    classDef batch fill:#241318,stroke:#a4626a,stroke-width:1.4px,color:#f3e8ea
+    classDef pipe fill:#1c1917,stroke:#8a8378,stroke-width:1.2px,color:#f1efe9
+    classDef store fill:#0e1d17,stroke:#5b8a6f,stroke-width:1.5px,color:#e7f2ec
+    classDef ui fill:#1c1917,stroke:#c9a96a,stroke-width:1.5px,color:#f5f5f4
+
+    class U input
+    class API,MERGE core
+    class SM,LD live
+    class PY batch
+    class SB,DP,CB,FC,IW,SE pipe
+    class DB store
+    class UI ui
 ```
 
 ---
