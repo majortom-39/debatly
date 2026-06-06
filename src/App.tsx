@@ -1,4 +1,4 @@
-import { AudioLines, BadgeCheck, BadgeHelp, BadgeMinus, BadgeX, Ban, BarChart3, BookOpen, BookOpenCheck, Check, ChevronDown, CircleDashed, CircleStop, CircleX, Clock, Clock3, Download, ExternalLink, FileText, Gavel, GitCompareArrows, Handshake, HelpCircle, Landmark, LogOut, Menu, MessageSquareQuote, Mic, Moon, MoreHorizontal, OctagonX, Pause, Pencil, Play, Plus, Repeat, RotateCcw, Scale, Search, Settings, Share2, Sparkles, Sun, Swords, Target, Trash2, TrendingDown, TrendingUp, TriangleAlert, Users, UserCircle, X } from "lucide-react";
+import { AudioLines, BadgeCheck, BadgeHelp, BadgeMinus, BadgeX, Ban, BarChart3, BookOpen, BookOpenCheck, Check, ChevronDown, CircleDashed, CircleStop, CircleX, Clock, Clock3, Download, ExternalLink, FileText, Gavel, GitCompareArrows, Handshake, HelpCircle, Landmark, LogOut, Menu, MessageSquareQuote, Mic, MonitorPlay, Moon, MoreHorizontal, OctagonX, Pause, Pencil, Play, Plus, Repeat, RotateCcw, Scale, Search, Settings, Share2, Sparkles, Sun, Swords, Target, Trash2, TrendingDown, TrendingUp, TriangleAlert, Users, UserCircle, X } from "lucide-react";
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { createRoot } from "react-dom/client";
@@ -342,9 +342,11 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const importGuideRef = useRef<HTMLDivElement | null>(null);
   const recordGuideRef = useRef<HTMLDivElement | null>(null);
+  const tabGuideRef = useRef<HTMLButtonElement | null>(null);
   const [toast, setToast] = useState("");
   const toastTimerRef = useRef<number | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const isMobile = useIsMobile();
   const [showSettings, setShowSettings] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [importJob, setImportJob] = useState<{ stage: string; stageLabel: string; progress: number; error: string | null; emailConfigured?: boolean; notified?: boolean } | null>(null);
@@ -536,6 +538,20 @@ function App() {
       document.documentElement.style.overflow = previousHtmlOverflow;
     };
   }, [showSettings]);
+
+  // On mobile the sidebar is an off-canvas overlay; lock background scroll while
+  // it's open so scrolling moves the sidebar (or nothing), not the page behind it.
+  useEffect(() => {
+    if (!isSidebarOpen || !isMobile) return;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [isSidebarOpen, isMobile]);
 
   useEffect(() => {
     const reportId = debateReport?.id || "";
@@ -1149,7 +1165,7 @@ function App() {
     }
   }
 
-  async function beginLive() {
+  async function beginLive(source: "mic" | "tab" = "mic") {
     if (projectRef.current.status === "report_ready") {
       const message = "Report already generated. Create a new debate project to record again.";
       setStatus(message);
@@ -1226,16 +1242,31 @@ function App() {
         byteRate: 0
       }));
 
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error("Microphone capture is unavailable in this browser context.");
+      if (source === "tab") {
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+          throw new Error("Tab audio capture isn't supported here — use Chrome or Edge on desktop.");
+        }
+        setStatus("Requesting tab audio");
+        pushEvent("Requesting tab/system audio share");
+        stream = await getTabAudioStream();
+        streamRef.current = stream;
+        // When the user clicks Chrome's "Stop sharing" bar, the audio track ends —
+        // wind the live session down gracefully.
+        stream.getAudioTracks().forEach((track) => track.addEventListener("ended", () => {
+          pushEvent("Tab sharing stopped by browser");
+          sendStopLive();
+        }));
+      } else {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Microphone capture is unavailable in this browser context.");
+        }
+        setStatus("Requesting microphone");
+        pushEvent("Requesting microphone permission");
+        stream = await getAudioStream();
+        streamRef.current = stream;
+        await refreshAudioInputs();
       }
-
-      setStatus("Requesting microphone");
-      pushEvent("Requesting microphone permission");
-      stream = await getAudioStream();
-      streamRef.current = stream;
-      await refreshAudioInputs();
-      pushEvent(`Microphone stream acquired: ${stream.getAudioTracks().map((track) => track.label || "audio input").join(", ")}`);
+      pushEvent(`${source === "tab" ? "Tab audio" : "Microphone"} stream acquired: ${stream.getAudioTracks().map((track) => track.label || "audio input").join(", ")}`);
       startAudioMeter(stream);
 
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -1442,6 +1473,21 @@ function App() {
       await new Promise((resolve) => window.setTimeout(resolve, 80));
     }
     await beginLive();
+  }
+
+  async function beginLiveFromTab() {
+    if (isLive) { requestStopLive(); return; }
+    if (projectRef.current.status === "report_ready") {
+      const message = "Report already generated. Create a new debate project to record again.";
+      setStatus(message);
+      pushEvent(message);
+      return;
+    }
+    if (isMicTesting) {
+      stopMicTest();
+      await new Promise((resolve) => window.setTimeout(resolve, 80));
+    }
+    await beginLive("tab");
   }
 
   function cancelStopLive() {
@@ -1778,6 +1824,22 @@ function App() {
     if (selectedDeviceId && !inputs.some((device) => device.deviceId === selectedDeviceId)) {
       setSelectedDeviceId("");
     }
+  }
+
+  // Tab/system audio capture: getDisplayMedia gives a screen-share stream; we want
+  // ONLY its audio, so we stop the video track and keep the audio track. The user
+  // picks a tab/window and ticks "Share tab audio" in the browser's picker.
+  async function getTabAudioStream() {
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } as MediaTrackConstraints
+    });
+    display.getVideoTracks().forEach((track) => track.stop());
+    if (display.getAudioTracks().length === 0) {
+      display.getTracks().forEach((track) => track.stop());
+      throw new Error("No tab audio was shared. In the picker, choose a tab and turn on “Share tab audio”.");
+    }
+    return new MediaStream(display.getAudioTracks());
   }
 
   async function getAudioStream() {
@@ -2605,6 +2667,18 @@ function App() {
                 <span>{reportAlreadyExists ? "Report generated" : reportProgress.active ? "Generating…" : "Generate report"}</span>
               </button>
             )}
+            {!isLive && !recordingLocked && (
+              <button
+                ref={tabGuideRef}
+                className="iconButton"
+                type="button"
+                onClick={() => void beginLiveFromTab()}
+                title="Capture a browser tab's audio (stream a debate from another tab)"
+                aria-label="Capture browser tab audio"
+              >
+                <MonitorPlay size={19} />
+              </button>
+            )}
             <div className="shareMenuWrap" ref={shareMenuRef}>
               <button
                 className="iconButton"
@@ -2825,7 +2899,7 @@ function App() {
       )}
       {isExportingReportPdf && <PdfExportOverlay themeMode={themeMode} />}
       {showOnboarding && !isLive && !isMicTesting && (
-        <OnboardingCoach importRef={importGuideRef} recordRef={recordGuideRef} onDismiss={dismissOnboarding} />
+        <OnboardingCoach importRef={importGuideRef} recordRef={recordGuideRef} tabRef={tabGuideRef} onDismiss={dismissOnboarding} />
       )}
       {toast && <div className="appToast" role="status" aria-live="polite">{toast}</div>}
     </main>
@@ -3714,16 +3788,17 @@ function ImportProgress({ job, onDismiss, onCancel, onNotify, themeMode }: { job
 // First-visit coach marks: two anchored callouts (upload/link + live record) with
 // a light scrim. Positions are measured from the live DOM so the arrows track the
 // real elements; dismiss persists in localStorage so it never shows twice.
-function OnboardingCoach({ importRef, recordRef, onDismiss }: {
+function OnboardingCoach({ importRef, recordRef, tabRef, onDismiss }: {
   importRef: { current: HTMLDivElement | null };
   recordRef: { current: HTMLDivElement | null };
+  tabRef: { current: HTMLButtonElement | null };
   onDismiss: () => void;
 }) {
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [rect, setRect] = useState<DOMRect | null>(null);
   useLayoutEffect(() => {
     const measure = () => {
-      const el = step === 1 ? importRef.current : recordRef.current;
+      const el = step === 1 ? importRef.current : step === 2 ? recordRef.current : tabRef.current;
       setRect(el?.getBoundingClientRect() || null);
     };
     measure();
@@ -3736,7 +3811,7 @@ function OnboardingCoach({ importRef, recordRef, onDismiss }: {
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };
-  }, [importRef, recordRef, step]);
+  }, [importRef, recordRef, tabRef, step]);
 
   if (!rect) return null;
   const PAD = 6;
@@ -3747,6 +3822,12 @@ function OnboardingCoach({ importRef, recordRef, onDismiss }: {
   const cardStyle = leftAligned
     ? { left: cardLeft, top: rect.bottom + 16 }
     : { right: Math.max(16, vw - rect.right), top: rect.bottom + 16 };
+  const badge = step === 1 ? "Most accurate" : step === 2 ? "Live" : "Easiest live";
+  const body = step === 1
+    ? "Upload a recording or paste a video link to analyze a full debate — this gives the most accurate read."
+    : step === 2
+      ? "Or stream a live debate and let Debatly listen in the background as it happens — high quality, in real time."
+      : "Watching a debate in another browser tab? Capture that tab's audio directly — no switching tabs or juggling play/record. Pick the tab and turn on “Share tab audio”.";
 
   // Portal to <body> so the overlay sits OUTSIDE the .shell `zoom: 0.75` context.
   // Otherwise the zoom re-scales these viewport-space coordinates (and Chrome's
@@ -3761,18 +3842,14 @@ function OnboardingCoach({ importRef, recordRef, onDismiss }: {
           style={leftAligned ? { left: Math.min(40, Math.max(16, rect.left - cardLeft + 24)) } : undefined}
         />
         <div className="coachCardHead">
-          <span className="coachBadge">{step === 1 ? "Most accurate" : "Live"}</span>
-          <span className="coachStep">{step} of 2</span>
+          <span className="coachBadge">{badge}</span>
+          <span className="coachStep">{step} of 3</span>
         </div>
-        {step === 1 ? (
-          <p>Upload a recording or paste a video link to analyze a full debate — this gives the most accurate read.</p>
-        ) : (
-          <p>Or stream a live debate and let Debatly listen in the background as it happens — high quality, in real time.</p>
-        )}
+        <p>{body}</p>
         <div className="coachActions">
           {step === 1 && <button type="button" className="coachSkip" onClick={onDismiss}>Skip</button>}
-          {step === 1
-            ? <button type="button" className="coachDone" onClick={() => setStep(2)}>Next</button>
+          {step < 3
+            ? <button type="button" className="coachDone" onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}>Next</button>
             : <button type="button" className="coachDone" onClick={onDismiss}>Got it</button>}
         </div>
       </div>
